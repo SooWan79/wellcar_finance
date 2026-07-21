@@ -486,6 +486,127 @@ def stats_yearly():
     return jsonify(stats)
 
 
+# ---------------------------------------------------------------- 엑셀 마이그레이션
+IMPORT_LIMIT = 50000
+
+def _import_rows(db, table, rows, fields, required, key_fields, result_prefix, results):
+    """멀티셋 방식 중복 제거 후 일괄 등록: 동일 키 행이 DB에 이미 n건 있으면 n건까지는 건너뛴다."""
+    def row_key(r):
+        return tuple(int(float(r.get(f) or 0)) if f in ("amount", "vat") else str(r.get(f) or "")
+                     for f in key_fields)
+
+    valid = []
+    for r in rows:
+        if not isinstance(r, dict):
+            results[f"{result_prefix}_invalid"] += 1
+            continue
+        data = {}
+        for f in fields:
+            if f in r:
+                data[f] = r[f]
+        try:
+            datetime.strptime(str(data.get("trx_date", "")), "%Y-%m-%d")
+            for f in ("exchange_rate", "quantity", "unit_price", "amount", "vat", "net_amount"):
+                if f in data and data[f] not in (None, ""):
+                    data[f] = float(data[f])
+            ok = all(data.get(f) for f in required) and float(data.get("amount") or 0) != 0
+        except (ValueError, TypeError):
+            ok = False
+        if not ok:
+            results[f"{result_prefix}_invalid"] += 1
+            continue
+        valid.append(data)
+
+    # 키별 기존 DB 건수만큼 스킵 (재업로드 시 중복 방지, 파일 내 정당한 중복은 유지)
+    skip_budget = {}
+    for data in valid:
+        k = row_key(data)
+        if k not in skip_budget:
+            cond = " AND ".join(
+                (f"CAST(COALESCE({f},0) AS INTEGER)=?" if f in ("amount", "vat") else f"COALESCE({f},'')=?")
+                for f in key_fields)
+            args = [int(float(data.get(f) or 0)) if f in ("amount", "vat") else str(data.get(f) or "")
+                    for f in key_fields]
+            cur = db.execute(f"SELECT COUNT(*) FROM {table} WHERE {cond}", args)
+            skip_budget[k] = cur.fetchone()[0]
+        if skip_budget[k] > 0:
+            skip_budget[k] -= 1
+            results[f"{result_prefix}_skipped"] += 1
+            continue
+        cols = ", ".join(data)
+        marks = ", ".join("?" * len(data))
+        db.execute(f"INSERT INTO {table} ({cols}) VALUES ({marks})", list(data.values()))
+        results[f"{result_prefix}_added"] += 1
+
+
+def _auto_add_codes(db, incomes, expenses, results):
+    """가져온 데이터에 등장하는 신규 코드값을 코드관리에 자동 추가."""
+    wanted = set()
+    for r in incomes:
+        if not isinstance(r, dict):
+            continue
+        it = (r.get("income_type") or "").strip()
+        if it:
+            wanted.add(("income_type", it, ""))
+            if (r.get("category") or "").strip():
+                wanted.add(("income_category", r["category"].strip(), it))
+        for group, field in (("payment_type", "payment_type"), ("account", "account"),
+                             ("manufacturer", "manufacturer"), ("client", "client")):
+            v = (r.get(field) or "").strip()
+            if v:
+                wanted.add((group, v, ""))
+    for r in expenses:
+        if not isinstance(r, dict):
+            continue
+        et = (r.get("expense_type") or "").strip()
+        if et:
+            wanted.add(("expense_type", et, ""))
+            if (r.get("item") or "").strip():
+                wanted.add(("expense_item", r["item"].strip(), et))
+        for group, field in (("payment_type", "payment_type"), ("client", "client")):
+            v = (r.get(field) or "").strip()
+            if v:
+                wanted.add((group, v, ""))
+    for group, value, parent in sorted(wanted):
+        exists = db.execute(
+            "SELECT 1 FROM codes WHERE code_group=? AND code_value=? AND parent_value=?",
+            (group, value, parent)).fetchone()
+        if exists:
+            continue
+        order = db.execute(
+            "SELECT COALESCE(MAX(sort_order),-1)+1 FROM codes WHERE code_group=? AND parent_value=?",
+            (group, parent)).fetchone()[0]
+        db.execute("INSERT INTO codes(code_group, code_value, parent_value, sort_order) VALUES (?,?,?,?)",
+                   (group, value, parent, order))
+        results["codes_added"] += 1
+
+
+@app.route("/api/import-json", methods=["POST"])
+def import_json():
+    body = request.get_json(silent=True) or {}
+    incomes = body.get("incomes") or []
+    expenses = body.get("expenses") or []
+    if not isinstance(incomes, list) or not isinstance(expenses, list):
+        return jsonify({"error": "incomes, expenses 배열이 필요합니다."}), 400
+    if len(incomes) + len(expenses) > IMPORT_LIMIT:
+        return jsonify({"error": f"한 번에 {IMPORT_LIMIT:,}건까지 가져올 수 있습니다."}), 400
+    db = get_db()
+    results = {"incomes_added": 0, "incomes_skipped": 0, "incomes_invalid": 0,
+               "expenses_added": 0, "expenses_skipped": 0, "expenses_invalid": 0,
+               "codes_added": 0}
+    _import_rows(db, "incomes", incomes, INCOME_FIELDS,
+                 ["trx_date", "income_type", "amount"],
+                 ["trx_date", "income_type", "category", "client", "amount", "vat", "memo"],
+                 "incomes", results)
+    _import_rows(db, "expenses", expenses, EXPENSE_FIELDS,
+                 ["trx_date", "expense_type", "amount"],
+                 ["trx_date", "expense_type", "item", "client", "amount", "memo"],
+                 "expenses", results)
+    _auto_add_codes(db, incomes, expenses, results)
+    db.commit()
+    return jsonify(results)
+
+
 @app.route("/api/meta")
 def meta():
     db = get_db()

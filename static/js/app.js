@@ -39,8 +39,35 @@
     toastTimer = setTimeout(() => { t.hidden = true; }, 2600);
   }
 
+  // ---------------------------------------------------------------- theme
+  const THEME_KEY = "wellcar_theme";
+  const THEMES = [
+    { id: "auto", label: "🌓 자동" },
+    { id: "light", label: "☀️ 라이트" },
+    { id: "dark", label: "🌙 다크" },
+  ];
+  function applyTheme(id) {
+    if (id === "auto") delete document.documentElement.dataset.theme;
+    else document.documentElement.dataset.theme = id;
+    const t = THEMES.find(t => t.id === id) || THEMES[0];
+    $("themeToggle").textContent = t.label;
+  }
+  function currentTheme() {
+    const saved = localStorage.getItem(THEME_KEY);
+    return THEMES.some(t => t.id === saved) ? saved : "auto";
+  }
+  $("themeToggle").addEventListener("click", () => {
+    const idx = THEMES.findIndex(t => t.id === currentTheme());
+    const next = THEMES[(idx + 1) % THEMES.length].id;
+    localStorage.setItem(THEME_KEY, next);
+    applyTheme(next);
+    // 차트는 렌더 시점에 색을 고정하므로 현재 화면을 다시 그린다
+    const active = views.find(v => !$("view-" + v).hidden);
+    if (active && refreshers[active]) refreshers[active]();
+  });
+
   // ---------------------------------------------------------------- tabs
-  const views = ["dashboard", "income", "expense", "monthly", "quarterly", "yearly", "codes"];
+  const views = ["dashboard", "income", "expense", "monthly", "quarterly", "yearly", "codes", "import"];
   const refreshers = {};
   function showView(name) {
     views.forEach(v => { $("view-" + v).hidden = v !== name; });
@@ -599,10 +626,109 @@
   refreshers.income = loadIncomeList;
   refreshers.expense = loadExpenseList;
 
+  // ---------------------------------------------------------------- 엑셀 가져오기
+  let parsedImport = null;
+
+  function importReset() {
+    parsedImport = null;
+    $("importFile").value = "";
+    $("importFileName").textContent = "";
+    $("importPreview").hidden = true;
+    $("importResult").hidden = true;
+  }
+
+  async function handleImportFile(file) {
+    if (!file) return;
+    if (!/\.(xlsx|xlsm)$/i.test(file.name)) {
+      toast("xlsx 또는 xlsm 파일을 선택해 주세요.", true);
+      return;
+    }
+    $("importFileName").textContent = `${file.name} (${(file.size / 1024 / 1024).toFixed(2)}MB) 분석 중…`;
+    $("importResult").hidden = true;
+    $("importFile").value = ""; // 같은 파일을 다시 선택해도 change 이벤트가 발생하도록
+    try {
+      parsedImport = await WellcarXlsx.parse(file);
+    } catch (err) {
+      toast("파일 분석 실패: " + err.message, true);
+      $("importFileName").textContent = "";
+      return;
+    }
+    $("importFileName").textContent = file.name;
+    const p = parsedImport;
+    if (!p.incomes.length && !p.expenses.length) {
+      $("importSummary").innerHTML =
+        '<p class="empty-msg">매출집계/지출집계 형식의 시트를 찾지 못했습니다.<br>' +
+        "'영업일자'와 '매출액'(또는 '지출금액') 열이 있는 시트가 필요합니다.</p>";
+      $("importPreview").hidden = false;
+      $("importCommit").disabled = true;
+      return;
+    }
+    $("importCommit").disabled = false;
+    const dates = [...p.incomes, ...p.expenses].map(r => r.trx_date).sort();
+    const incSum = p.incomes.reduce((a, r) => a + r.amount, 0);
+    const expSum = p.expenses.reduce((a, r) => a + r.amount, 0);
+    const sheetRows = p.sheets.map(s =>
+      `<tr><td>${esc(s.name)}</td><td>${s.kind === "income" ? "수입" : "지출"}</td>` +
+      `<td class="num">${fmt(s.count)}건</td></tr>`).join("");
+    $("importSummary").innerHTML =
+      `<div class="import-stats">
+        <span class="import-stat">수입 <b>${fmt(p.incomes.length)}</b>건 · ${fmtWon(incSum)}</span>
+        <span class="import-stat">지출 <b>${fmt(p.expenses.length)}</b>건 · ${fmtWon(expSum)}</span>
+        <span class="import-stat">기간 <b>${dates[0]} ~ ${dates[dates.length - 1]}</b></span>
+        ${p.dupInFile ? `<span class="import-stat">시트 간 중복 제외 <b>${fmt(p.dupInFile)}</b>건</span>` : ""}
+      </div>
+      <div class="table-wrap" style="max-height:260px;overflow-y:auto">
+        <table class="data"><thead><tr><th>시트</th><th>종류</th><th class="num">추출 건수</th></tr></thead>
+        <tbody>${sheetRows}</tbody></table>
+      </div>`;
+    $("importPreview").hidden = false;
+  }
+
+  $("importBrowse").addEventListener("click", () => $("importFile").click());
+  $("importFile").addEventListener("change", () => handleImportFile($("importFile").files[0]));
+  $("importCancel").addEventListener("click", importReset);
+  const drop = $("importDrop");
+  drop.addEventListener("dragover", e => { e.preventDefault(); drop.classList.add("dragover"); });
+  drop.addEventListener("dragleave", () => drop.classList.remove("dragover"));
+  drop.addEventListener("drop", e => {
+    e.preventDefault();
+    drop.classList.remove("dragover");
+    handleImportFile(e.dataTransfer.files[0]);
+  });
+
+  $("importCommit").addEventListener("click", async () => {
+    if (!parsedImport) return;
+    $("importCommit").disabled = true;
+    $("importCommit").textContent = "저장 중…";
+    try {
+      const r = await post("/api/import-json",
+        { incomes: parsedImport.incomes, expenses: parsedImport.expenses });
+      $("importResult").innerHTML = `<div class="import-result-box">
+        ✅ <b>마이그레이션 완료</b><br>
+        수입: <b>${fmt(r.incomes_added)}건 등록</b>${r.incomes_skipped ? `, 중복 ${fmt(r.incomes_skipped)}건 건너뜀` : ""}${r.incomes_invalid ? `, 형식 오류 ${fmt(r.incomes_invalid)}건` : ""}<br>
+        지출: <b>${fmt(r.expenses_added)}건 등록</b>${r.expenses_skipped ? `, 중복 ${fmt(r.expenses_skipped)}건 건너뜀` : ""}${r.expenses_invalid ? `, 형식 오류 ${fmt(r.expenses_invalid)}건` : ""}<br>
+        ${r.codes_added ? `신규 코드 ${fmt(r.codes_added)}개가 코드관리에 자동 추가되었습니다.` : "신규 코드는 없습니다."}<br>
+        대시보드와 통계 화면에서 이관된 데이터를 확인하세요.</div>`;
+      $("importResult").hidden = false;
+      $("importPreview").hidden = true;
+      parsedImport = null;
+      await loadCodes();
+      toast("엑셀 데이터 마이그레이션이 완료되었습니다.");
+    } catch (err) {
+      toast(err.message, true);
+    } finally {
+      $("importCommit").disabled = false;
+      $("importCommit").textContent = "DB에 저장 (마이그레이션 실행)";
+    }
+  });
+
+  refreshers.import = () => {};
+
   // ---------------------------------------------------------------- init
   async function loadCodes() { CODES = await api("/api/codes"); refreshFormSelects(); }
 
   async function init() {
+    applyTheme(currentTheme());
     try {
       META = await api("/api/meta");
     } catch (_e) { /* 기본값 유지 */ }
