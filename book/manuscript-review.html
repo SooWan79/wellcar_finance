@@ -1,0 +1,569 @@
+<title>리더의 언어 원고 진단</title>
+<style>
+  :root{
+    --paper:#F4F3F8; --surface:#FFFFFF; --surface-2:#FAFAFD;
+    --ink:#1A1C26; --ink-2:#4C4F60; --ink-3:#83869A;
+    --line:#E2E0EC; --line-2:#CFCDDD;
+    --blue:#3B54B0; --blue-soft:#E7EAF8;
+    --rose:#A8386E; --rose-soft:#F7E8F0;
+    --ok:#2C7A55; --ok-soft:#E4F1EA;
+    --warn:#8F5D0C; --warn-soft:#F8EEDC;
+    --crit:#A93636; --crit-soft:#F8E6E6;
+    --shadow:0 1px 2px rgba(26,28,38,.05), 0 8px 24px -16px rgba(26,28,38,.22);
+    --serif:"Noto Serif KR","Nanum Myeongjo","Apple SD Gothic Neo",Batang,serif;
+    --sans:"Pretendard",-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace;
+  }
+  @media (prefers-color-scheme:dark){
+    :root:not([data-theme="light"]){
+      --paper:#111219; --surface:#191B24; --surface-2:#1F212C;
+      --ink:#E9E8F1; --ink-2:#ABADC0; --ink-3:#7B7E92;
+      --line:#2B2D3A; --line-2:#3B3E4E;
+      --blue:#93A2F2; --blue-soft:#1E2340;
+      --rose:#E790BB; --rose-soft:#391E2C;
+      --ok:#68C294; --ok-soft:#16301F;
+      --warn:#DEAC5A; --warn-soft:#33260F;
+      --crit:#EC8888; --crit-soft:#361B1B;
+      --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+    }
+  }
+  :root[data-theme="dark"]{
+    --paper:#111219; --surface:#191B24; --surface-2:#1F212C;
+    --ink:#E9E8F1; --ink-2:#ABADC0; --ink-3:#7B7E92;
+    --line:#2B2D3A; --line-2:#3B3E4E;
+    --blue:#93A2F2; --blue-soft:#1E2340;
+    --rose:#E790BB; --rose-soft:#391E2C;
+    --ok:#68C294; --ok-soft:#16301F;
+    --warn:#DEAC5A; --warn-soft:#33260F;
+    --crit:#EC8888; --crit-soft:#361B1B;
+    --shadow:0 1px 2px rgba(0,0,0,.4), 0 8px 24px -16px rgba(0,0,0,.8);
+  }
+
+  *{box-sizing:border-box}
+  body{
+    margin:0; background:var(--paper); color:var(--ink);
+    font-family:var(--sans); font-size:16px; line-height:1.75;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:1120px; margin:0 auto; padding:0 28px 120px}
+  .col{max-width:70ch}
+  p{margin:0 0 1.1em}
+  a{color:var(--blue)}
+  strong{font-weight:700; color:var(--ink)}
+  em{font-style:normal; color:var(--rose); font-weight:600}
+
+  /* ---------- masthead ---------- */
+  .mast{padding:76px 0 40px; border-bottom:1px solid var(--line)}
+  .eyebrow{
+    font-family:var(--mono); font-size:11px; letter-spacing:.16em;
+    text-transform:uppercase; color:var(--ink-3); margin:0 0 20px;
+  }
+  h1{
+    font-family:var(--serif); font-weight:700; font-size:clamp(34px,5.4vw,54px);
+    line-height:1.18; letter-spacing:-.02em; margin:0 0 18px; text-wrap:balance;
+  }
+  h1 .sub{display:block; font-size:.44em; color:var(--ink-3); font-weight:400; letter-spacing:.02em; margin-top:14px}
+  .lede{font-size:18px; line-height:1.72; color:var(--ink-2); max-width:62ch; margin:0}
+  .lede b{color:var(--ink)}
+
+  /* ---------- kpi row ---------- */
+  .kpis{
+    display:grid; grid-template-columns:repeat(auto-fit,minmax(148px,1fr));
+    gap:1px; background:var(--line); border:1px solid var(--line);
+    border-radius:10px; overflow:hidden; margin:38px 0 0;
+  }
+  .kpi{background:var(--surface); padding:18px 18px 16px}
+  .kpi .n{
+    font-family:var(--mono); font-size:26px; font-weight:600; letter-spacing:-.02em;
+    font-variant-numeric:tabular-nums; display:block; line-height:1.2;
+  }
+  .kpi .l{font-size:12px; color:var(--ink-3); margin-top:6px; display:block; letter-spacing:.01em}
+
+  /* ---------- sections ---------- */
+  section{padding:64px 0 0}
+  .shead{display:flex; align-items:baseline; gap:14px; margin:0 0 10px; border-top:2px solid var(--ink); padding-top:16px}
+  .snum{font-family:var(--mono); font-size:12px; font-weight:600; color:var(--blue); letter-spacing:.1em; flex:none}
+  h2{font-family:var(--serif); font-size:clamp(24px,3.2vw,31px); font-weight:700; letter-spacing:-.015em; margin:0; line-height:1.3; text-wrap:balance}
+  .sdek{color:var(--ink-2); font-size:15.5px; max-width:66ch; margin:0 0 30px}
+
+  h3{font-family:var(--serif); font-size:20px; font-weight:700; margin:38px 0 12px; letter-spacing:-.01em}
+  h4{font-size:14px; font-weight:700; margin:26px 0 8px; color:var(--ink-2); letter-spacing:.02em}
+
+  /* ---------- verdict ---------- */
+  .verdict{
+    background:var(--surface); border:1px solid var(--line); border-left:3px solid var(--blue);
+    border-radius:0 10px 10px 0; padding:24px 26px; margin:0 0 8px; box-shadow:var(--shadow);
+  }
+  .verdict p:last-child{margin-bottom:0}
+
+  /* ---------- grid map ---------- */
+  .mapwrap{overflow-x:auto; padding-bottom:6px}
+  .map{display:grid; grid-template-columns:88px repeat(7,minmax(96px,1fr)); gap:6px; min-width:820px; margin:18px 0 14px}
+  .map .rh{
+    display:flex; flex-direction:column; justify-content:center; padding:8px 10px 8px 0;
+    border-right:1px solid var(--line); text-align:right;
+  }
+  .map .rh b{font-family:var(--serif); font-size:15px; display:block; line-height:1.35}
+  .map .rh span{font-family:var(--mono); font-size:10.5px; color:var(--ink-3); font-variant-numeric:tabular-nums}
+  .cell{
+    background:var(--surface); border:1px solid var(--line); border-radius:7px;
+    padding:9px 10px 10px; min-height:82px; display:flex; flex-direction:column; gap:5px;
+  }
+  .cell .id{font-family:var(--mono); font-size:10.5px; color:var(--ink-3); letter-spacing:.06em}
+  .cell .t{font-size:11.5px; line-height:1.4; color:var(--ink-2); flex:1;
+           display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; overflow:hidden}
+  .cell .bar{height:4px; border-radius:2px; background:var(--line-2); position:relative; overflow:hidden}
+  .cell .bar i{position:absolute; inset:0 auto 0 0; border-radius:2px; background:var(--ink-3)}
+  .cell .v{font-family:var(--mono); font-size:10.5px; font-variant-numeric:tabular-nums; color:var(--ink-3)}
+  .cell.short{border-color:var(--crit); background:var(--crit-soft)}
+  .cell.short .bar i{background:var(--crit)}
+  .cell.short .v{color:var(--crit); font-weight:600}
+  .cell.long{border-color:var(--line-2); background:var(--surface-2)}
+  .cell.long .bar i{background:var(--blue)}
+  .cell.xlong{border-color:var(--warn); background:var(--warn-soft)}
+  .cell.xlong .bar i{background:var(--warn)}
+  .cell.xlong .v{color:var(--warn); font-weight:600}
+
+  .legend{display:flex; flex-wrap:wrap; gap:18px; font-size:12px; color:var(--ink-3); margin:0 0 8px}
+  .legend span{display:flex; align-items:center; gap:7px}
+  .sw{width:12px; height:12px; border-radius:3px; border:1px solid var(--line-2); flex:none}
+
+  /* ---------- tables ---------- */
+  .tw{overflow-x:auto; margin:20px 0 8px; border:1px solid var(--line); border-radius:10px; background:var(--surface)}
+  table{border-collapse:collapse; width:100%; min-width:560px; font-size:14px}
+  th,td{text-align:left; padding:11px 14px; border-bottom:1px solid var(--line); vertical-align:top}
+  thead th{
+    font-size:11px; letter-spacing:.1em; text-transform:uppercase; color:var(--ink-3);
+    font-weight:600; background:var(--surface-2); white-space:nowrap;
+  }
+  tbody tr:last-child td{border-bottom:none}
+  td.num{font-family:var(--mono); font-variant-numeric:tabular-nums; white-space:nowrap}
+  td.sec{font-family:var(--mono); font-size:12.5px; color:var(--blue); white-space:nowrap; font-weight:600}
+
+  /* ---------- score bars ---------- */
+  .scores{display:flex; flex-direction:column; gap:2px; margin:22px 0 8px}
+  .score{display:grid; grid-template-columns:minmax(120px,150px) 1fr 46px; align-items:center; gap:14px; padding:9px 0; border-bottom:1px solid var(--line)}
+  .score:last-child{border-bottom:none}
+  .score .nm{font-size:14px; color:var(--ink-2)}
+  .score .track{height:7px; background:var(--line); border-radius:4px; overflow:hidden}
+  .score .track i{display:block; height:100%; border-radius:4px; background:var(--blue)}
+  .score .track i.w{background:var(--warn)}
+  .score .track i.c{background:var(--crit)}
+  .score .track i.g{background:var(--ok)}
+  .score .pt{font-family:var(--mono); font-size:13px; font-variant-numeric:tabular-nums; text-align:right; color:var(--ink-2)}
+
+  /* ---------- findings ---------- */
+  .find{
+    background:var(--surface); border:1px solid var(--line); border-radius:10px;
+    padding:20px 22px; margin:0 0 14px; box-shadow:var(--shadow);
+  }
+  .fhead{display:flex; align-items:center; gap:10px; flex-wrap:wrap; margin:0 0 10px}
+  .pill{
+    font-family:var(--mono); font-size:10.5px; font-weight:700; letter-spacing:.08em;
+    padding:3px 8px; border-radius:4px; text-transform:uppercase; white-space:nowrap;
+  }
+  .pill.c{background:var(--crit-soft); color:var(--crit)}
+  .pill.w{background:var(--warn-soft); color:var(--warn)}
+  .pill.i{background:var(--blue-soft); color:var(--blue)}
+  .fhead h4{margin:0; font-size:16px; color:var(--ink); font-family:var(--serif); font-weight:700; letter-spacing:-.01em}
+  .floc{font-family:var(--mono); font-size:11px; color:var(--ink-3)}
+  .find p{margin:0 0 10px; font-size:14.5px; color:var(--ink-2)}
+  .find p:last-child{margin-bottom:0}
+  .fix{
+    background:var(--ok-soft); border-radius:7px; padding:12px 14px; margin-top:12px;
+    font-size:14px; color:var(--ink-2); border-left:2px solid var(--ok);
+  }
+  .fix b{color:var(--ok); font-size:11px; font-family:var(--mono); letter-spacing:.1em;
+         text-transform:uppercase; display:block; margin-bottom:5px}
+  .quote{
+    font-family:var(--mono); font-size:12.5px; background:var(--surface-2);
+    border:1px solid var(--line); border-radius:6px; padding:9px 12px; margin:8px 0;
+    color:var(--ink-2); overflow-x:auto; white-space:pre-wrap; line-height:1.6;
+  }
+  .quote .del{color:var(--crit); text-decoration:line-through}
+  .quote .ins{color:var(--ok); font-weight:600}
+
+  /* ---------- anatomy ---------- */
+  .beats{display:flex; flex-direction:column; gap:1px; background:var(--line); border:1px solid var(--line); border-radius:10px; overflow:hidden; margin:20px 0 8px}
+  .beat{background:var(--surface); padding:14px 18px; display:grid; grid-template-columns:30px 1fr 92px; gap:16px; align-items:start}
+  .beat .bn{font-family:var(--mono); font-size:12px; color:var(--blue); font-weight:700; padding-top:2px}
+  .beat .bt b{display:block; font-family:var(--serif); font-size:15.5px; margin-bottom:3px}
+  .beat .bt span{font-size:13.5px; color:var(--ink-2); line-height:1.6}
+  .beat .bl{font-family:var(--mono); font-size:11.5px; color:var(--ink-3); text-align:right; font-variant-numeric:tabular-nums; padding-top:3px; white-space:nowrap}
+
+  ul{margin:0 0 1.1em; padding-left:1.15em}
+  li{margin-bottom:.5em}
+  li::marker{color:var(--ink-3)}
+
+  .note{font-size:13.5px; color:var(--ink-3); border-top:1px solid var(--line); padding-top:14px; margin-top:34px}
+
+  @media (max-width:720px){
+    .wrap{padding:0 18px 90px}
+    .mast{padding:48px 0 32px}
+    .score{grid-template-columns:1fr 44px; gap:8px}
+    .score .track{grid-column:1/-1; order:3}
+    .beat{grid-template-columns:26px 1fr; }
+    .beat .bl{grid-column:2; text-align:left; padding-top:6px}
+  }
+  @media (prefers-reduced-motion:reduce){*{animation:none!important; transition:none!important}}
+  :focus-visible{outline:2px solid var(--blue); outline-offset:2px}
+</style>
+
+<div class="wrap">
+
+<header class="mast">
+  <p class="eyebrow">Manuscript Diagnostic · 2026.08</p>
+  <h1>『리더의 언어』 원고 진단
+    <span class="sub">5장 35편 · 890매 · 구조 · 결함 · 수정안</span></h1>
+  <p class="lede">초고 전문을 문단 단위로 해체해 <b>편별 분량·구성 요소·상호참조·모티프 분포</b>를 측정했습니다.
+  결론부터: <b>구조는 이미 출간 수준으로 정교합니다.</b> 남은 일은 새로 쓰는 것이 아니라,
+  세 군데의 사실 오류를 고치고 두 군데의 무게중심을 옮기는 일입니다.</p>
+
+  <div class="kpis">
+    <div class="kpi"><span class="n">178,081</span><span class="l">전체 글자수 (공백 제외)</span></div>
+    <div class="kpi"><span class="n">890</span><span class="l">200자 원고지 환산 (매)</span></div>
+    <div class="kpi"><span class="n">~197</span><span class="l">신국판 예상 쪽수</span></div>
+    <div class="kpi"><span class="n">35 / 35</span><span class="l">편 구성 템플릿 준수</span></div>
+    <div class="kpi"><span class="n" style="color:var(--warn)">11</span><span class="l">발견된 수정 필요 지점</span></div>
+    <div class="kpi"><span class="n" style="color:var(--blue)">84</span><span class="l">종합 완성도 / 100</span></div>
+  </div>
+</header>
+
+<!-- ══════════ 1 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">01</span><h2>한 줄 진단</h2></div>
+  <div class="col">
+    <div class="verdict">
+      <p><b>“원고가 아니라 편집 단계의 책이다.”</b></p>
+      <p>35편 전부가 동일한 7박자 구성을 지키고 있고, 편당 분량 표준편차는 588자에 불과합니다.
+      리더십 에세이 초고에서 이 정도의 구조 균질성은 드뭅니다. 고전 인용 카드가 35편 전부에 들어 있고,
+      「답설야중거」의 저자 문제를 이양연·서산대사 양설로 병기한 대목처럼 <em>사실 확인의 태도</em>도
+      이미 출간물 기준입니다.</p>
+      <p>따라서 이 진단서는 “무엇을 더 쓸까”가 아니라 <b>“무엇을 고치고 무엇을 옮길까”</b>에 집중합니다.
+      치명적 오류 3건은 반나절이면 고쳐지고, 구조 조정 2건이 이 책의 완성도를 84점에서 90점대로 올립니다.</p>
+    </div>
+  </div>
+</section>
+
+<!-- ══════════ 2 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">02</span><h2>원고 전체 구조도</h2></div>
+  <p class="sdek">5장 × 7편 = 35편. 각 칸의 막대는 편당 분량이며, 색은 중앙값(3,203자)에서 벗어난 정도를 나타냅니다.
+  장 마무리 편(x-7)이 무거워지는 것이 정상 패턴인데 — <b>2장만 거꾸로</b>입니다.</p>
+
+  <div class="legend">
+    <span><i class="sw" style="background:var(--crit-soft); border-color:var(--crit)"></i>2,880자 미만 — 증보 필요</span>
+    <span><i class="sw" style="background:var(--surface); border-color:var(--line)"></i>표준대 2,880~3,520자</span>
+    <span><i class="sw" style="background:var(--surface-2); border-color:var(--line-2)"></i>3,520~4,200자</span>
+    <span><i class="sw" style="background:var(--warn-soft); border-color:var(--warn)"></i>4,200자 초과 — 분할 검토</span>
+  </div>
+
+  <div class="mapwrap"><div class="map">
+    <div class="rh"><b>1장</b><span>리더의 자리<br>23,339자</span></div>
+    <div class="cell short"><span class="id">1-1</span><span class="t">리더의 자리는 의자가 아니라 무대다</span><span class="bar"><i style="width:54%"></i></span><span class="v">2,818</span></div>
+    <div class="cell long"><span class="id">1-2</span><span class="t">쇄빙선이 되는 일</span><span class="bar"><i style="width:68%"></i></span><span class="v">3,556</span></div>
+    <div class="cell"><span class="id">1-3</span><span class="t">과일 껍질 리더십</span><span class="bar"><i style="width:57%"></i></span><span class="v">3,008</span></div>
+    <div class="cell long"><span class="id">1-4</span><span class="t">리더는 ‘되는’ 것이 아니라 ‘되어가는’ 것이다</span><span class="bar"><i style="width:72%"></i></span><span class="v">3,793</span></div>
+    <div class="cell"><span class="id">1-5</span><span class="t">보이지 않는 것을 보이게 만드는 사람</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,182</span></div>
+    <div class="cell long"><span class="id">1-6</span><span class="t">외로움을 견디는 힘</span><span class="bar"><i style="width:73%"></i></span><span class="v">3,802</span></div>
+    <div class="cell"><span class="id">1-7</span><span class="t">왜 나는 리더가 되었는가</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,180</span></div>
+
+    <div class="rh"><b>2장</b><span>리더의 비전<br>21,621자</span></div>
+    <div class="cell"><span class="id">2-1</span><span class="t">비전은 목재가 아니라 바다다</span><span class="bar"><i style="width:65%"></i></span><span class="v">3,404</span></div>
+    <div class="cell"><span class="id">2-2</span><span class="t">Bold Play — 담대함의 그릇</span><span class="bar"><i style="width:59%"></i></span><span class="v">3,100</span></div>
+    <div class="cell"><span class="id">2-3</span><span class="t">Winning with X — 무엇으로 이길 것인가</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,220</span></div>
+    <div class="cell"><span class="id">2-4</span><span class="t">한 발짝 앞 — One Step Ahead의 철학</span><span class="bar"><i style="width:58%"></i></span><span class="v">3,059</span></div>
+    <div class="cell"><span class="id">2-5</span><span class="t">Storefront를 정의하라</span><span class="bar"><i style="width:64%"></i></span><span class="v">3,357</span></div>
+    <div class="cell"><span class="id">2-6</span><span class="t">비전을 시로 말하기 — 자작시 「벚꽃」</span><span class="bar"><i style="width:57%"></i></span><span class="v">2,978</span></div>
+    <div class="cell short"><span class="id">2-7</span><span class="t">철학 없는 조직은 사상누각이다</span><span class="bar"><i style="width:48%"></i></span><span class="v">2,503</span></div>
+
+    <div class="rh"><b>3장</b><span>리더의 동행<br>24,463자</span></div>
+    <div class="cell"><span class="id">3-1</span><span class="t">Team-ship이 성과를 이긴다</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,191</span></div>
+    <div class="cell"><span class="id">3-2</span><span class="t">Handsome한 팀 — 손에 무언가를 든 사람들</span><span class="bar"><i style="width:66%"></i></span><span class="v">3,475</span></div>
+    <div class="cell long"><span class="id">3-3</span><span class="t">블루베리 효과 — 함께 익는다는 것</span><span class="bar"><i style="width:67%"></i></span><span class="v">3,527</span></div>
+    <div class="cell"><span class="id">3-4</span><span class="t">오케스트레이션의 마법</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,203</span></div>
+    <div class="cell"><span class="id">3-5</span><span class="t">배터리 리더십 — 포수의 자세</span><span class="bar"><i style="width:61%"></i></span><span class="v">3,186</span></div>
+    <div class="cell"><span class="id">3-6</span><span class="t">무동력 요트의 선장은 바람이 정한다</span><span class="bar"><i style="width:60%"></i></span><span class="v">3,123</span></div>
+    <div class="cell xlong"><span class="id">3-7</span><span class="t">신뢰는 사랑보다 오래간다</span><span class="bar"><i style="width:91%"></i></span><span class="v">4,758</span></div>
+
+    <div class="rh"><b>4장</b><span>리더의 결정<br>25,370자</span></div>
+    <div class="cell xlong"><span class="id">4-1</span><span class="t">What &lt; How &lt; Why &lt; Will — 사고의 4단계</span><span class="bar"><i style="width:83%"></i></span><span class="v">4,345</span></div>
+    <div class="cell long"><span class="id">4-2</span><span class="t">협상의 9원칙 — 평정심에서 인간적 소통까지</span><span class="bar"><i style="width:73%"></i></span><span class="v">3,836</span></div>
+    <div class="cell"><span class="id">4-3</span><span class="t">역지사지, 그리고 프레이밍</span><span class="bar"><i style="width:62%"></i></span><span class="v">3,269</span></div>
+    <div class="cell"><span class="id">4-4</span><span class="t">감정과 공감을 구분하라</span><span class="bar"><i style="width:62%"></i></span><span class="v">3,257</span></div>
+    <div class="cell"><span class="id">4-5</span><span class="t">개와 늑대의 시간 — 리스크 관리의 본질</span><span class="bar"><i style="width:57%"></i></span><span class="v">2,978</span></div>
+    <div class="cell"><span class="id">4-6</span><span class="t">신발끈 묶느라 뛰지 못하는 일을 멈춰라</span><span class="bar"><i style="width:58%"></i></span><span class="v">3,028</span></div>
+    <div class="cell xlong"><span class="id">4-7</span><span class="t">실패를 다루는 리더의 언어</span><span class="bar"><i style="width:89%"></i></span><span class="v">4,657</span></div>
+
+    <div class="rh"><b>5장</b><span>리더의 유산<br>25,288자</span></div>
+    <div class="cell xlong"><span class="id">5-1</span><span class="t">답설야중거 — 내 발자국이 누군가의 길이 된다</span><span class="bar"><i style="width:83%"></i></span><span class="v">4,368</span></div>
+    <div class="cell"><span class="id">5-2</span><span class="t">학습조직 — 누구나 강사, 누구나 수강생</span><span class="bar"><i style="width:56%"></i></span><span class="v">2,941</span></div>
+    <div class="cell"><span class="id">5-3</span><span class="t">성장과 공감 — 두 개의 노로 젓는 배</span><span class="bar"><i style="width:59%"></i></span><span class="v">3,108</span></div>
+    <div class="cell"><span class="id">5-4</span><span class="t">행복한 컨설턴트, 행복한 팀</span><span class="bar"><i style="width:58%"></i></span><span class="v">3,055</span></div>
+    <div class="cell xlong"><span class="id">5-5</span><span class="t">후배가 따라오게 만드는 리더 — 김사부의 12화</span><span class="bar"><i style="width:100%"></i></span><span class="v">5,247</span></div>
+    <div class="cell"><span class="id">5-6</span><span class="t">무시하는 집단에 대한 진짜 복수</span><span class="bar"><i style="width:58%"></i></span><span class="v">3,050</span></div>
+    <div class="cell"><span class="id">5-7</span><span class="t">수국처럼 — 시들었다가도 다시 피는 리더</span><span class="bar"><i style="width:67%"></i></span><span class="v">3,519</span></div>
+  </div></div>
+
+  <h3>본문 바깥의 블록</h3>
+  <p class="sdek">본문 35편(120,081자) 외에 58,000자가 프롤로그·장 도입·리더의 노트·에필로그·부록에 있습니다.
+  전체의 <b>33%</b>가 본문 밖에 있다는 뜻이고, 그중 프롤로그 하나가 특히 무겁습니다.</p>
+  <div class="tw"><table>
+    <thead><tr><th>블록</th><th>분량</th><th>편 평균 대비</th><th>역할</th></tr></thead>
+    <tbody>
+      <tr><td>프롤로그</td><td class="num" style="color:var(--warn); font-weight:600">15,865자</td><td class="num" style="color:var(--warn)">4.6배</td><td>BLOOM 5동사 · 5동심원 · 8토양 · 위계/블루밍 12차원 비교표</td></tr>
+      <tr><td>장을 열며 ×5</td><td class="num">1,272~1,554자</td><td class="num">0.4배</td><td>실제 팀원 서한(Leaders Message) + 장 예고</td></tr>
+      <tr><td>리더의 노트 ×5</td><td class="num">3,090~4,175자</td><td class="num">1.1배</td><td>장 마무리 확장 에세이</td></tr>
+      <tr><td>Leader’s Note ×5</td><td class="num">7문장 카드</td><td class="num">—</td><td>장별 잠언 요약</td></tr>
+      <tr><td>에필로그</td><td class="num">3,900자</td><td class="num">1.1배</td><td>다섯 장을 BLOOM으로 재독</td></tr>
+      <tr><td>부록 도구상자</td><td class="num">9,504자</td><td class="num">2.8배</td><td>실무 도구 6종 (주간·월간·분기)</td></tr>
+    </tbody>
+  </table></div>
+</section>
+
+<!-- ══════════ 3 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">03</span><h2>이미 작동하는 글 구조</h2></div>
+  <p class="sdek">새로 설계할 필요가 없습니다. 원고가 이미 일관된 7박자를 쓰고 있고,
+  35편 전부가 이 틀을 지킵니다. 아래는 원고에서 <b>역으로 추출한</b> 표준형입니다 —
+  앞으로 고쳐 쓰거나 증보할 때 이 배분을 기준으로 삼으시면 됩니다.</p>
+
+  <h3>편(篇) 단위 — 7박자 · 목표 3,200자</h3>
+  <div class="beats">
+    <div class="beat"><span class="bn">1</span><span class="bt"><b>제사(題詞)</b><span>한 줄 잠언을 박스로. 편 전체를 한 문장으로 압축한 것.</span></span><span class="bl">1행</span></div>
+    <div class="beat"><span class="bn">2</span><span class="bt"><b>개인 장면</b><span>저자 본인의 구체적 순간에서 출발. 날짜·장소·대사가 있는 실제 장면.</span></span><span class="bl">400~600자</span></div>
+    <div class="beat"><span class="bn">3</span><span class="bt"><b>개념 정의</b><span>그 장면이 가리키는 개념을 이름 붙이고 반대항과 대조.</span></span><span class="bl">400~500자</span></div>
+    <div class="beat"><span class="bn">4</span><span class="bt"><b>고전 카드</b><span>한문 원문 + 독음 + 번역 + 출처. 통념을 뒤집는 해석 한 단락이 따라붙음.</span></span><span class="bl">500~700자</span></div>
+    <div class="beat"><span class="bn">5</span><span class="bt"><b>영상·문화 사례</b><span>드라마·영화 한 장면. 대조쌍(예: 「소셜 네트워크」 ↔ 「아폴로 13」)일 때 가장 강함.</span></span><span class="bl">500~700자</span></div>
+    <div class="beat"><span class="bn">6</span><span class="bt"><b>실무 전개 (소제목 2~3)</b><span>개념을 현장 동작으로 분해. “세 가지 자세”처럼 셈할 수 있는 형태.</span></span><span class="bl">800~1,000자</span></div>
+    <div class="beat"><span class="bn">7</span><span class="bt"><b>Reflection 3문항</b><span>독자가 자기 조직에 대입하는 질문. 3문항 고정.</span></span><span class="bl">박스</span></div>
+  </div>
+
+  <h3>장(章) 단위 — 5블록</h3>
+  <div class="beats">
+    <div class="beat"><span class="bn">1</span><span class="bt"><b>장 표제 + 부제 + 잠언</b><span>“제N장 / 리더의 ○○ / — 질문 두 개 —”</span></span><span class="bl">1쪽</span></div>
+    <div class="beat"><span class="bn">2</span><span class="bt"><b>장을 열며</b><span>실제 팀원 서한 전문 → 그 편지가 던진 질문 → 일곱 편 예고 → BLOOM 글자 연결</span></span><span class="bl">1,400자</span></div>
+    <div class="beat"><span class="bn">3</span><span class="bt"><b>본문 7편</b><span>x-1은 가장 근본적인 정의, x-7은 장 전체를 닫는 무게.</span></span><span class="bl">22,000자</span></div>
+    <div class="beat"><span class="bn">4</span><span class="bt"><b>리더의 노트</b><span>본문과 다른 결의 확장 에세이. 사적 소재(분리수거, 베란다 화분)일 때 가장 좋음.</span></span><span class="bl">3,200~4,200자</span></div>
+    <div class="beat"><span class="bn">5</span><span class="bt"><b>Leader’s Note + 다음 장 예고</b><span>일곱 문장 잠언 카드 → “다음 장:” 한 줄.</span></span><span class="bl">1쪽</span></div>
+  </div>
+
+  <h3>책 전체 — 안에서 밖으로</h3>
+  <p class="col">1장 [나] → 2장 [옆사람] → 3장 [팀] → 4장 [조직] → 5장 [다음 세대].
+  BLOOM 다섯 동사(Bear·Light·Orchestrate·Own·Multiply)와 다섯 동심원이 정확히 포개집니다.
+  <b>이 축은 흔들지 마십시오.</b> 이 책의 가장 큰 자산이고, 아래 수정안은 모두 이 축을 건드리지 않습니다.</p>
+</section>
+
+<!-- ══════════ 4 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">04</span><h2>완성도 채점</h2></div>
+  <p class="sdek">실용서 기준 7개 차원. 종합 <b>84 / 100</b> — “출간 가능, 교정 후 90점대”.</p>
+
+  <div class="scores">
+    <div class="score"><span class="nm">구조 일관성</span><span class="track"><i class="g" style="width:95%"></i></span><span class="pt">95</span></div>
+    <div class="score"><span class="nm">서사 아크</span><span class="track"><i class="g" style="width:90%"></i></span><span class="pt">90</span></div>
+    <div class="score"><span class="nm">실행 가능성</span><span class="track"><i class="g" style="width:90%"></i></span><span class="pt">90</span></div>
+    <div class="score"><span class="nm">문장·목소리</span><span class="track"><i class="g" style="width:92%"></i></span><span class="pt">92</span></div>
+    <div class="score"><span class="nm">인용 정확성</span><span class="track"><i class="w" style="width:82%"></i></span><span class="pt">82</span></div>
+    <div class="score"><span class="nm">분량 균질성</span><span class="track"><i class="w" style="width:78%"></i></span><span class="pt">78</span></div>
+    <div class="score"><span class="nm">독자 진입 설계</span><span class="track"><i class="c" style="width:70%"></i></span><span class="pt">70</span></div>
+    <div class="score"><span class="nm">편집 정합성</span><span class="track"><i class="c" style="width:65%"></i></span><span class="pt">65</span></div>
+  </div>
+
+  <h4 style="margin-top:34px">확실히 잘된 것 — 손대지 마십시오</h4>
+  <ul class="col">
+    <li><b>35/35편 템플릿 준수.</b> 제사·고전 카드·Reflection이 한 편도 빠지지 않았습니다.</li>
+    <li><b>편당 표준편차 588자.</b> 독자가 “한 편 = 5분”이라는 리듬을 몸으로 익히게 됩니다.</li>
+    <li><b>문화 레퍼런스 34종.</b> 동양 고전(논어·맹자·노자·명심보감·삼국지·사기·손자병법)과
+        서구 서사(「아폴로 13」·「위플래시」·「머니볼」·「쇼생크 탈출」)가 균형을 이룹니다.</li>
+    <li><b>사실 확인 태도.</b> 「답설야중거」를 이양연 「야설」로 바로잡되 서산대사 전승을 병기한 처리는
+        이 장르에서 보기 드문 성실함입니다.</li>
+    <li><b>부록이 본문과 배선되어 있음.</b> 도구 6종이 각각 “몇 장 + BLOOM 어느 글자 + 어느 토양”으로 연결됩니다.</li>
+  </ul>
+</section>
+
+<!-- ══════════ 5 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">05</span><h2>발견된 결함과 수정안</h2></div>
+  <p class="sdek">심각도 순. 상위 3건은 <b>사실 오류</b>라 출간 전 반드시 고쳐야 하고,
+  중간 4건은 <b>구조</b>, 하위 4건은 <b>다듬기</b>입니다.</p>
+
+  <h3 style="color:var(--crit)">치명 — 출간 전 필수</h3>
+
+  <div class="find">
+    <div class="fhead"><span class="pill c">사실오류</span><h4>존재하지 않는 편 제목을 두 번 인용</h4></div>
+    <p class="floc">부록 도구 3 · 도구 6 “본문 연결” 줄</p>
+    <p>부록이 <code>5-5 「세 가지 시간」</code>을 두 번 참조하는데, 5-5의 실제 제목은
+    「후배가 따라오게 만드는 리더 — 김사부의 12화」입니다. ‘세 가지 시간’은 그 편 <b>안의 소제목</b>이지 편 제목이 아닙니다.
+    독자가 목차에서 찾으면 없습니다.</p>
+    <div class="quote"><span class="del">본문 연결: … / 5-5 「세 가지 시간」</span>
+<span class="ins">본문 연결: … / 5-5 「후배가 따라오게 만드는 리더」 중 ‘세 가지 시간’</span></div>
+    <div class="fix"><b>수정</b>두 곳 모두 위와 같이. 소제목을 인용할 때는 편 제목 + 소제목 형식으로 통일하십시오.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill c">사실오류</span><h4>‘여덟 가지 토양’과 ‘일곱 가지 토양’이 공존</h4></div>
+    <p class="floc">프롤로그 3회 “여덟 가지” ↔ 부록 2회 “일곱 가지”</p>
+    <p>프롤로그는 신뢰·심리적 안전·자율·호명·회고·자라남·휴식 + 기억 = <b>여덟</b>으로 명확히 세고,
+    “앞의 일곱은 매일의 결, 여덟째는 긴 시간의 결”이라고까지 층위를 나눕니다.
+    그런데 부록 도입부와 도구 3은 “일곱 가지 토양”이라고 씁니다. 부록 도구 6은 다시 “여덟 가지 토양”입니다.
+    같은 부록 안에서도 어긋납니다.</p>
+    <div class="quote"><span class="del">여섯 가지 도구는 본문의 다섯 장과 일곱 가지 토양에 각각 연결되어 있습니다</span>
+<span class="ins">여섯 가지 도구는 본문의 다섯 장과 여덟 가지 토양에 각각 연결되어 있습니다</span></div>
+    <div class="fix"><b>수정</b>부록의 “일곱 가지 토양” 2곳을 “여덟 가지 토양”으로 통일. 프롤로그가 기준입니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill c">누락</span><h4>목차에 부록이 없음</h4></div>
+    <p class="floc">목차 — 프롤로그 … 에필로그에서 끝남</p>
+    <p>부록 「리더의 실무 도구상자」는 9,504자, 도구 6종의 독립 파트입니다.
+    실용서에서 <b>부록은 구매 결정 요인</b>입니다. 서점에서 목차를 펼친 독자에게
+    “이 책은 읽고 끝나는 책이 아니라 매주 펼치는 책”이라는 신호를 보내는 자리인데 지금은 보이지 않습니다.</p>
+    <div class="fix"><b>수정</b>목차 말미에 추가 —<br>
+    <code>부록 — 리더의 실무 도구상자</code><br>
+    <code>&nbsp;&nbsp;도구 1. 비전 Sync 프로토콜 (분기 90분)</code><br>
+    <code>&nbsp;&nbsp;도구 2. OKR-Aiming Canvas (월 30분)</code> … 도구 6까지 사용 주기와 함께.</div>
+  </div>
+
+  <h3 style="color:var(--warn); margin-top:44px">구조 — 개정 권장</h3>
+
+  <div class="find">
+    <div class="fhead"><span class="pill w">과적</span><h4>프롤로그가 1장에 닿기 전에 독자를 소진시킴</h4></div>
+    <p class="floc">프롤로그 15,865자 — 편 평균의 4.6배, 본문 밖 블록 중 최대</p>
+    <p>독자는 1장 첫 문장을 만나기 전에 <b>①리더의 언어 7(8)가지 ②위계 vs 블루밍 12차원 표
+    ③다섯 동심원 ④BLOOM 다섯 동사 ⑤여덟 가지 토양</b>을 연속으로 받습니다.
+    개념 다섯 세트, 숫자로만 7+12+5+5+8 = 37개 항목입니다. 서점 서서 읽기에서 가장 흔한 이탈 지점이고,
+    끝까지 읽은 독자도 1장에 도착할 때쯤 BLOOM을 이미 잊습니다.</p>
+    <p>내용이 나빠서가 아니라 <b>위치가 문제</b>입니다. 여덟 가지 토양은 5장까지 다 읽은 독자에게
+    훨씬 잘 읽히는 자료이고 — 실제로 각 토양 설명이 “3-7에서 다룬 자리”, “4-7과 5-1에서 다룬 자리”처럼
+    <b>앞으로 나올 편을 미리 참조</b>하고 있습니다. 아직 읽지 않은 편을 근거로 드는 구조입니다.</p>
+    <div class="fix"><b>수정</b>프롤로그를 <b>7,000자 내외</b>로 줄이고 두 덩어리를 옮기십시오.<br>
+    ① <b>여덟 가지 토양</b>(약 3,000자) → 5장과 에필로그 사이의 독립 간주(間奏) 「블루밍의 여덟 가지 흙」으로.
+    본문을 다 읽은 뒤라 상호참조가 회수로 작동합니다.<br>
+    ② <b>위계/블루밍 12차원 표</b> → 부록 맨 앞 진단 도구(“도구 0”)로. 표는 원래 읽는 것이 아니라 대조하는 것입니다.<br>
+    프롤로그에는 <b>다섯 동심원 + BLOOM 다섯 동사</b>만 남기십시오. 그것만으로 다섯 장의 지도는 충분합니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill w">셈오류</span><h4>“일곱 가지”라고 해놓고 여덟 개를 셈</h4></div>
+    <p class="floc">프롤로그 「리더의 언어가 하는 일곱 가지」</p>
+    <p>동기부여·비전·결속·결단·결정·공감·칭찬까지 일곱을 센 뒤
+    “그리고 — 이 일곱 가지에 한 가지가 더 있습니다. 지적합니다”로 여덟째를 답니다.
+    수사적으로는 좋은 장치인데, <b>소제목과 마무리 문장이 둘 다 “일곱”</b>이라 셈이 어긋나 보입니다.
+    마무리 문장은 여덟 개를 모두 나열합니다.</p>
+    <div class="fix"><b>수정 (택1)</b><br>
+    <b>A안 — 층위를 살림:</b> 소제목을 「리더의 언어가 하는 일곱 가지, 그리고 하나」로.
+    마무리를 “이 일곱 가지와, 그것들을 떠받치는 한 가지가”로. <b>권장</b> — 여덟째(지적)를 특별한 자리로 두는 저자 의도가 살아납니다.<br>
+    <b>B안 — 단순화:</b> 전부 “여덟 가지”로 통일.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill w">무게</span><h4>2장 마지막 편이 전편 중 가장 짧음</h4></div>
+    <p class="floc">2-7 「철학 없는 조직은 사상누각이다」 2,503자 · 소제목 2개</p>
+    <p>다른 장의 마무리 편은 3-7이 4,758자, 4-7이 4,657자입니다.
+    <b>x-7은 장을 닫는 자리</b>라 무게가 실려야 하는데 2-7만 거꾸로, 35편 중 최소입니다.
+    내용도 좋습니다 — 명심보감 성심편, 「소셜 네트워크」↔「아폴로 13」 대조, 임원실 액자 일화까지 재료는 다 있는데
+    실무 전개(6번 박자)가 소제목 하나 분량으로 끝납니다.</p>
+    <div class="fix"><b>수정</b>3,300~3,500자로 증보. 추가할 자리는 명확합니다 — 「아폴로 13」 단락 뒤에
+    <b>“철학을 매일 호명하는 세 가지 자리”</b> 소제목을 하나 더 넣으십시오.
+    (예: 채용 면접의 마지막 질문 / 실패 회고의 첫 문장 / 사람을 떠나보낼 때의 한 마디.)
+    2장 전체가 “비전은 매일 호명되는 풍경”이라고 선언했으므로, 그 호명의 실제 동작으로 장을 닫는 것이 가장 자연스럽습니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill w">무게</span><h4>책의 피날레가 같은 장의 중간 편보다 가벼움</h4></div>
+    <p class="floc">5-7 「수국처럼」 3,519자 ↔ 5-5 「김사부의 12화」 5,247자</p>
+    <p>5-7은 35편의 마지막이자 제목이 프롤로그(“베란다의 수국이 다시 피기를 기다리며”)와
+    수미상관을 이루는 자리입니다. 그런데 분량이 표준대에 머물러, 바로 두 편 앞의 5-5보다 1,700자 가볍습니다.
+    독자 체감상 <b>클라이맥스가 5-5에서 이미 지나가고</b> 마지막 편은 정리처럼 읽힙니다.</p>
+    <div class="fix"><b>수정</b>두 가지를 함께 하십시오.<br>
+    ① 5-7을 <b>4,300~4,500자</b>로 증보 — 수국의 pH 성질(흙이 꽃 색을 정한다)을 여덟 가지 토양과 명시적으로 잇는 단락을 추가하면,
+    책 전체의 은유가 마지막에서 한 번 닫힙니다.<br>
+    ② 5-5를 <b>4,300자 수준으로 감량</b> — Reflection이 5문항까지 늘어난 것도 이 편의 과적 신호입니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill w">일관성</span><h4>Leaders Message 번호가 장 순서와 어긋남</h4></div>
+    <p class="floc">1장 #1 → 2장 #5 → 3장 #3 → 4장 #4 → 5장 #9</p>
+    <p>실제 편지 연번을 그대로 쓰신 것으로 보입니다. 저자에게는 정직한 기록이지만
+    독자에게는 <b>#5 다음에 #3</b>이 나오는 것으로만 보입니다. 빠진 번호(#2, #6~#8)도 설명되지 않습니다.</p>
+    <div class="fix"><b>수정 (택1)</b><br>
+    <b>A안 (권장):</b> 원번호를 유지하고 1장 첫 등장에 각주 한 줄 —
+    “이 책에 실린 서한은 저자가 팀에 보낸 실제 편지이며, 번호는 원 연번을 그대로 두었습니다.”
+    원자료의 진정성이 오히려 강점이 됩니다.<br>
+    <b>B안:</b> 장 순서대로 #1~#5 재번호.</div>
+  </div>
+
+  <h3 style="color:var(--blue); margin-top:44px">다듬기 — 교정 단계</h3>
+
+  <div class="find">
+    <div class="fhead"><span class="pill i">반복</span><h4>모티프 과다 노출</h4></div>
+    <p>여러 자리에 반복 등장하는 소재를 셌습니다.
+    <b>답설야중거 8회</b>(프롤로그·3-6·5장 도입·5-1·5-5·5-6·리더의 노트·에필로그),
+    <b>쇄빙선 6회</b>, <b>블루베리 5회</b>, <b>보글보글 Credit 3회</b>.
+    BLOOM·동심원의 반복은 의도된 척추라 문제없지만, 위 넷은 <b>“그 편에서 처음 만나는 감동”</b>을 미리 소진시킵니다.
+    특히 답설야중거는 5-1의 제목이자 저자의 평생 좌우명인데, 독자는 5-1에 도착하기 전에 이미 세 번 읽습니다.</p>
+    <div class="fix"><b>수정</b>답설야중거는 프롤로그와 3-6의 언급을 삭제하고 5-1에 집중, 에필로그에서 한 번만 회수.
+    쇄빙선은 1-2가 본산이므로 1-5와 2장 도입의 재언급 중 하나를 덜어내십시오.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill i">일관성</span><h4>Reflection 문항 수가 들쭉날쭉</h4></div>
+    <p>33편이 3문항, 3-7과 4-7이 4문항, 5-5가 5문항입니다.
+    독자가 3문항 리듬에 익숙해진 뒤 갑자기 5문항을 만나면 페이지 끝에서 호흡이 무너집니다.</p>
+    <div class="fix"><b>수정</b>전부 3문항으로 통일하거나, “장 마무리 편(x-7)만 4문항”이라는 규칙을 세우고
+    5-5를 3문항으로 줄이십시오. 후자가 구조적으로 더 낫습니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill i">밀도</span><h4>후반부로 갈수록 소제목이 줄어듦</h4></div>
+    <p>1~2장은 편당 소제목 3개가 기본인데, 4~5장은 2개가 기본입니다.
+    분량은 오히려 4~5장이 더 큽니다(4장 25,370자 · 5장 25,288자 vs 2장 21,621자).
+    <b>같은 분량을 더 적은 칸으로 나눈다</b>는 뜻이고, 독자에게는 후반부가 더 빽빽하게 느껴집니다.
+    집필 후반의 편집 밀도가 떨어진 흔적으로 보입니다.</p>
+    <div class="fix"><b>수정</b>4-3, 4-4, 5-2, 5-3, 5-4, 5-6에 소제목을 하나씩 더 넣어 3개로 맞추십시오.
+    글을 더 쓰는 것이 아니라 <b>기존 단락 사이에 칸막이를 세우는 작업</b>입니다. 반나절이면 됩니다.</div>
+  </div>
+
+  <div class="find">
+    <div class="fhead"><span class="pill i">표기</span><h4>한자 병기 표기가 통일되지 않음</h4></div>
+    <p>「춘망」과 「춘망(春望)」이 함께 나옵니다. 「답설야중거」·「야설(野雪)」·「答雪野中去」의 표기도
+    자리마다 다릅니다.</p>
+    <div class="fix"><b>수정</b>규칙 하나를 정해 일괄 적용 — 권장: <b>첫 등장에만 한자 병기, 이후는 한글</b>.
+    단 고전 인용 카드 안에서는 항상 원문 표기.</div>
+  </div>
+</section>
+
+<!-- ══════════ 6 ══════════ -->
+<section>
+  <div class="shead"><span class="snum">06</span><h2>작업 순서</h2></div>
+  <p class="sdek">의존관계 순으로 배열했습니다. 1~3은 서로 독립이라 오늘 끝낼 수 있고,
+  4를 먼저 해야 5의 분량 판단이 확정됩니다.</p>
+
+  <div class="tw"><table>
+    <thead><tr><th>순서</th><th>작업</th><th>대상</th><th>예상</th><th>효과</th></tr></thead>
+    <tbody>
+      <tr><td class="sec">1</td><td>상호참조 2건 수정</td><td>부록 도구 3·6</td><td class="num">10분</td><td>사실 오류 제거</td></tr>
+      <tr><td class="sec">2</td><td>‘일곱/여덟 가지 토양’ 통일</td><td>부록 2곳</td><td class="num">10분</td><td>사실 오류 제거</td></tr>
+      <tr><td class="sec">3</td><td>목차에 부록 파트 추가</td><td>목차</td><td class="num">20분</td><td>구매 전환 · 실용성 노출</td></tr>
+      <tr><td class="sec">4</td><td>프롤로그 분해 — 토양은 간주로, 12차원 표는 부록으로</td><td>프롤로그 → 5장 뒤 / 부록</td><td class="num">1~2일</td><td class="num" style="color:var(--ok); font-weight:600">가장 큰 효과</td></tr>
+      <tr><td class="sec">5</td><td>2-7 증보 · 5-7 증보 · 5-5 감량</td><td>3개 편</td><td class="num">2~3일</td><td>장 마무리 무게 정상화</td></tr>
+      <tr><td class="sec">6</td><td>소제목 보강 (6개 편)</td><td>4-3·4-4·5-2·5-3·5-4·5-6</td><td class="num">반나절</td><td>후반부 가독성</td></tr>
+      <tr><td class="sec">7</td><td>모티프 중복 정리 · Reflection 문항 통일 · 한자 표기 규칙</td><td>전체 교정</td><td class="num">1일</td><td>교정 마감</td></tr>
+    </tbody>
+  </table></div>
+
+  <div class="col">
+    <h3>이 순서를 마치면</h3>
+    <p>분량은 <b>178,081자 → 약 176,000자</b>로 거의 그대로입니다.
+    프롤로그에서 덜어낸 만큼 2-7·5-7 증보와 간주로 옮겨가기 때문입니다.
+    바뀌는 것은 총량이 아니라 <b>독자가 개념을 만나는 순서</b>입니다.</p>
+    <p>채점 기준으로는 편집 정합성 65→95, 독자 진입 설계 70→90, 분량 균질성 78→88이 되어
+    <b>종합 84 → 92</b> 수준입니다. 이 상태면 기획 출판 투고에 그대로 쓰실 수 있습니다.</p>
+  </div>
+
+  <p class="note">진단 근거: 초고 .docx 전문(1,415문단)을 문단 단위로 파싱해 편별 분량·구성 요소 유무·상호참조·모티프 분포를 측정했습니다.
+  분량은 공백 제외 글자수 기준이며, 쪽수는 신국판 900자/쪽으로 환산한 추정치입니다.</p>
+</section>
+
+</div>
