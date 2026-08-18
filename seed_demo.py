@@ -1,10 +1,10 @@
 """데모 데이터 생성 스크립트 (선택 실행).
 
-실행하면 최근 1년치 수입/지출 샘플 데이터를 wellcar.db에 넣어
+실행하면 최근 1년치 매출/지출 샘플 데이터를 wellcar.db에 넣어
 대시보드와 통계 화면을 바로 확인해 볼 수 있습니다.
 
     python seed_demo.py          # 데모 데이터 추가
-    python seed_demo.py --clear  # 모든 수입/지출 내역 삭제
+    python seed_demo.py --clear  # 모든 매출/지출 내역 삭제
 """
 import random
 import sqlite3
@@ -68,7 +68,7 @@ def seed():
         d += timedelta(days=1)
     db.commit()
     db.close()
-    print(f"데모 데이터 생성 완료: 수입 {n_inc}건, 지출 {n_exp}건")
+    print(f"데모 데이터 생성 완료: 매출 {n_inc}건, 지출 {n_exp}건")
 
 
 def clear():
@@ -77,7 +77,7 @@ def clear():
     db.execute("DELETE FROM expenses")
     db.commit()
     db.close()
-    print("모든 수입/지출 내역을 삭제했습니다.")
+    print("모든 매출/지출 내역을 삭제했습니다.")
 
 
 if __name__ == "__main__":

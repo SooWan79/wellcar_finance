@@ -3,24 +3,26 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>웰카오디오 수입지출관리시스템</title>
+<title>웰카오디오 매출/지출관리 시스템</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%232a78d6'/%3E%3Ctext x='16' y='23' font-size='19' font-weight='800' font-family='sans-serif' fill='white' text-anchor='middle'%3EW%3C/text%3E%3C/svg%3E">
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
 <header class="topbar">
-  <div class="brand">
-    <span class="brand-mark">W</span>
-    <div>
-      <h1>웰카오디오 수입지출관리</h1>
-      <p class="brand-sub">WellCar Audio Finance Management</p>
+  <div class="topbar-inner">
+    <div class="brand">
+      <span class="brand-mark">W</span>
+      <span class="brand-text">
+        <span class="brand-name">웰카오디오 매출/지출관리 시스템</span>
+        <span class="brand-sub">WellCar Audio Sales &amp; Expense Management</span>
+      </span>
     </div>
-    <button class="btn ghost theme-btn" id="themeToggle" title="화면 모드 전환">🌓 자동</button>
+    <button class="theme-btn" id="themeToggle" title="화면 모드 전환" aria-label="화면 모드 전환">🌓 자동</button>
   </div>
-  <nav class="tabs" id="mainTabs">
+  <nav class="tabs" id="mainTabs" aria-label="주요 메뉴">
     <button data-view="dashboard" class="tab active">대시보드</button>
-    <button data-view="income" class="tab">수입 등록</button>
-    <button data-view="expense" class="tab">지출 등록</button>
+    <button data-view="income" class="tab">매출관리</button>
+    <button data-view="expense" class="tab">지출관리</button>
     <button data-view="monthly" class="tab">월별 현황</button>
     <button data-view="quarterly" class="tab">분기별 현황</button>
     <button data-view="yearly" class="tab">연도별 현황</button>
@@ -34,68 +36,106 @@
   <!-- ================= 일별 대시보드 ================= -->
   <section id="view-dashboard" class="view">
     <div class="view-head">
-      <h2>일별 대시보드</h2>
+      <div class="view-title">
+        <h2>일별 대시보드</h2>
+        <p class="view-sub" id="dashSubtitle">날짜를 선택해 그날의 매출·지출 현황을 확인합니다.</p>
+      </div>
       <div class="filters">
-        <button class="btn ghost" id="dashPrev">◀</button>
-        <input type="date" id="dashDate" class="input">
-        <button class="btn ghost" id="dashNext">▶</button>
+        <div class="date-stepper">
+          <button class="step-btn" id="dashPrev" aria-label="이전 날짜">‹</button>
+          <input type="date" id="dashDate" class="input" aria-label="조회 날짜">
+          <button class="step-btn" id="dashNext" aria-label="다음 날짜">›</button>
+        </div>
         <button class="btn" id="dashToday">오늘</button>
       </div>
     </div>
 
-    <div class="tiles" id="dashTiles"></div>
+    <div id="dashTiles"></div>
 
     <div class="card">
-      <div class="card-head"><h3>최근 14일 수입·지출 추이</h3></div>
+      <div class="card-head">
+        <h3>최근 14일 매출·지출 추이</h3>
+        <span class="card-meta">단위: 원</span>
+      </div>
       <div id="dashChart" class="chart-box"></div>
     </div>
 
     <div class="grid-2">
       <div class="card">
         <div class="card-head">
-          <h3>당일 수입 내역 <span class="count-badge" id="dashIncCount"></span></h3>
-          <button class="btn small" id="dashAddIncome">+ 수입 등록</button>
+          <h3>당일 매출 내역 <span class="count-badge" id="dashIncCount"></span></h3>
+          <button class="btn small primary" id="dashAddIncome">+ 매출 등록</button>
         </div>
         <div class="table-wrap" id="dashIncomeList"></div>
       </div>
       <div class="card">
         <div class="card-head">
           <h3>당일 지출 내역 <span class="count-badge" id="dashExpCount"></span></h3>
-          <button class="btn small" id="dashAddExpense">+ 지출 등록</button>
+          <button class="btn small primary" id="dashAddExpense">+ 지출 등록</button>
         </div>
         <div class="table-wrap" id="dashExpenseList"></div>
       </div>
     </div>
   </section>
 
-  <!-- ================= 수입 등록 ================= -->
+  <!-- ================= 매출관리 ================= -->
   <section id="view-income" class="view" hidden>
-    <div class="view-head"><h2 id="incomeFormTitle">수입 등록</h2></div>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>매출관리</h2>
+        <p class="view-sub">매출을 건별로 등록하고 최근 내역을 확인·수정합니다.</p>
+      </div>
+    </div>
     <div class="grid-form">
       <div class="card">
+        <div class="card-head"><h3 id="incomeFormTitle">매출 등록</h3></div>
         <form id="incomeForm" class="entry-form">
           <input type="hidden" id="incId">
-          <div class="form-grid">
-            <label>영업일자 *<input type="date" id="incDate" required></label>
-            <label>요일<input type="text" id="incWeekday" readonly class="ro"></label>
-            <label>매출유형 *<select id="incType" required></select></label>
-            <label>매출구분<select id="incCategory"></select></label>
-            <label>차량제조사<select id="incManufacturer"></select></label>
-            <label>제품모델<input type="text" id="incModel" placeholder="예: FCIC"></label>
-            <label>거래처명<input type="text" id="incClient" list="clientList" placeholder="선택 또는 직접입력"></label>
-            <label>거래통화<select id="incCurrency"></select></label>
-            <label>CNY 기준환율<input type="number" id="incRate" step="0.01" value="1"></label>
-            <label>수량<input type="number" id="incQty" step="1" value="1"></label>
-            <label>단가<input type="number" id="incUnitPrice" step="1" value="0"></label>
-            <label>매출액 (KRW)<input type="number" id="incAmount" step="1" class="ro-calc"></label>
-            <label>결제유형<select id="incPayment"></select></label>
-            <label>세금계산서<select id="incTaxInvoice"><option value="N">N</option><option value="Y">Y</option></select></label>
-            <label>부가세<input type="number" id="incVat" step="1" class="ro-calc"></label>
-            <label>순매출액<input type="number" id="incNet" step="1" readonly class="ro"></label>
-            <label>계좌<select id="incAccount"></select></label>
-            <label class="span-2">적요<input type="text" id="incMemo" placeholder="메모"></label>
-          </div>
-          <p class="form-hint">결제유형이 '카드'이거나 세금계산서 Y이면 부가세(매출액×10/110)가 자동 계산됩니다. CNY 선택 시 매출액 = 수량×단가×환율.</p>
+
+          <fieldset class="form-section">
+            <legend>거래 정보</legend>
+            <div class="form-grid">
+              <label><span class="lbl">영업일자 <em>*</em></span><input type="date" id="incDate" required></label>
+              <label><span class="lbl">요일</span><input type="text" id="incWeekday" readonly class="ro" tabindex="-1"></label>
+              <label><span class="lbl">매출유형 <em>*</em></span><select id="incType" required></select></label>
+              <label><span class="lbl">매출구분</span><select id="incCategory"></select></label>
+              <label><span class="lbl">차량제조사</span><select id="incManufacturer"></select></label>
+              <label><span class="lbl">제품모델</span><input type="text" id="incModel" placeholder="예: FCIC"></label>
+              <label class="span-2"><span class="lbl">거래처명</span><input type="text" id="incClient" list="clientList" placeholder="선택하거나 직접 입력"></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>금액</legend>
+            <div class="form-grid">
+              <label><span class="lbl">거래통화</span><select id="incCurrency"></select></label>
+              <label><span class="lbl">CNY 기준환율</span><input type="number" id="incRate" step="0.01" value="1"></label>
+              <label><span class="lbl">수량</span><input type="number" id="incQty" step="1" value="1"></label>
+              <label><span class="lbl">단가</span><input type="number" id="incUnitPrice" step="1" value="0"></label>
+              <label class="span-2 field-strong"><span class="lbl">매출액 (KRW) <em>*</em></span><input type="number" id="incAmount" step="1"></label>
+            </div>
+            <p class="form-hint">CNY 선택 시 <b>매출액 = 수량 × 단가 × 기준환율</b>로 자동 계산됩니다.</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>결제 · 정산</legend>
+            <div class="form-grid">
+              <label><span class="lbl">결제유형</span><select id="incPayment"></select></label>
+              <label><span class="lbl">세금계산서</span><select id="incTaxInvoice"><option value="N">N</option><option value="Y">Y</option></select></label>
+              <label><span class="lbl">부가세</span><input type="number" id="incVat" step="1"></label>
+              <label><span class="lbl">순매출액</span><input type="number" id="incNet" step="1" readonly class="ro" tabindex="-1"></label>
+              <label class="span-2"><span class="lbl">계좌</span><select id="incAccount"></select></label>
+            </div>
+            <p class="form-hint">결제유형이 <b>카드</b>이거나 세금계산서가 <b>Y</b>이면 부가세(매출액 × 10/110)가 자동 계산됩니다.</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>메모</legend>
+            <div class="form-grid">
+              <label class="span-2"><span class="lbl">적요</span><input type="text" id="incMemo" placeholder="차종, 작업 내용 등"></label>
+            </div>
+          </fieldset>
+
           <div class="form-actions">
             <button type="submit" class="btn primary" id="incSubmit">등록</button>
             <button type="button" class="btn ghost" id="incReset">초기화</button>
@@ -104,36 +144,59 @@
       </div>
       <div class="card">
         <div class="card-head">
-          <h3>최근 수입 내역</h3>
-          <input type="search" id="incSearch" class="input" placeholder="거래처/적요 검색">
+          <h3>최근 매출 내역</h3>
+          <input type="search" id="incSearch" class="input" placeholder="거래처 · 적요 검색">
         </div>
         <div class="table-wrap tall" id="incomeList"></div>
       </div>
     </div>
   </section>
 
-  <!-- ================= 지출 등록 ================= -->
+  <!-- ================= 지출관리 ================= -->
   <section id="view-expense" class="view" hidden>
-    <div class="view-head"><h2 id="expenseFormTitle">지출 등록</h2></div>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>지출관리</h2>
+        <p class="view-sub">지출을 건별로 등록하고 최근 내역을 확인·수정합니다.</p>
+      </div>
+    </div>
     <div class="grid-form">
       <div class="card">
+        <div class="card-head"><h3 id="expenseFormTitle">지출 등록</h3></div>
         <form id="expenseForm" class="entry-form">
           <input type="hidden" id="expId">
-          <div class="form-grid">
-            <label>영업일자 *<input type="date" id="expDate" required></label>
-            <label>요일<input type="text" id="expWeekday" readonly class="ro"></label>
-            <label>지출유형 *<select id="expType" required></select></label>
-            <label>거래품목<select id="expItem"></select></label>
-            <label>결제유형<select id="expPayment"></select></label>
-            <label>거래처명<input type="text" id="expClient" list="clientList" placeholder="선택 또는 직접입력"></label>
-            <label>거래통화<select id="expCurrency"></select></label>
-            <label>CNY 기준환율<input type="number" id="expRate" step="0.01" value="1"></label>
-            <label>수량<input type="number" id="expQty" step="1" value="1"></label>
-            <label>단가<input type="number" id="expUnitPrice" step="1" value="0"></label>
-            <label>지출금액 (KRW)<input type="number" id="expAmount" step="1" class="ro-calc"></label>
-            <label class="span-2">적요<input type="text" id="expMemo" placeholder="메모"></label>
-          </div>
-          <p class="form-hint">CNY 선택 시 지출금액 = 수량×단가×환율로 자동 계산됩니다.</p>
+
+          <fieldset class="form-section">
+            <legend>거래 정보</legend>
+            <div class="form-grid">
+              <label><span class="lbl">영업일자 <em>*</em></span><input type="date" id="expDate" required></label>
+              <label><span class="lbl">요일</span><input type="text" id="expWeekday" readonly class="ro" tabindex="-1"></label>
+              <label><span class="lbl">지출유형 <em>*</em></span><select id="expType" required></select></label>
+              <label><span class="lbl">거래품목</span><select id="expItem"></select></label>
+              <label><span class="lbl">결제유형</span><select id="expPayment"></select></label>
+              <label><span class="lbl">거래처명</span><input type="text" id="expClient" list="clientList" placeholder="선택하거나 직접 입력"></label>
+            </div>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>금액</legend>
+            <div class="form-grid">
+              <label><span class="lbl">거래통화</span><select id="expCurrency"></select></label>
+              <label><span class="lbl">CNY 기준환율</span><input type="number" id="expRate" step="0.01" value="1"></label>
+              <label><span class="lbl">수량</span><input type="number" id="expQty" step="1" value="1"></label>
+              <label><span class="lbl">단가</span><input type="number" id="expUnitPrice" step="1" value="0"></label>
+              <label class="span-2 field-strong"><span class="lbl">지출금액 (KRW) <em>*</em></span><input type="number" id="expAmount" step="1"></label>
+            </div>
+            <p class="form-hint">CNY 선택 시 <b>지출금액 = 수량 × 단가 × 기준환율</b>로 자동 계산됩니다.</p>
+          </fieldset>
+
+          <fieldset class="form-section">
+            <legend>메모</legend>
+            <div class="form-grid">
+              <label class="span-2"><span class="lbl">적요</span><input type="text" id="expMemo" placeholder="용도, 비고 등"></label>
+            </div>
+          </fieldset>
+
           <div class="form-actions">
             <button type="submit" class="btn primary" id="expSubmit">등록</button>
             <button type="button" class="btn ghost" id="expReset">초기화</button>
@@ -143,7 +206,7 @@
       <div class="card">
         <div class="card-head">
           <h3>최근 지출 내역</h3>
-          <input type="search" id="expSearch" class="input" placeholder="거래처/적요 검색">
+          <input type="search" id="expSearch" class="input" placeholder="거래처 · 적요 검색">
         </div>
         <div class="table-wrap tall" id="expenseList"></div>
       </div>
@@ -153,20 +216,26 @@
   <!-- ================= 월별 현황 ================= -->
   <section id="view-monthly" class="view" hidden>
     <div class="view-head">
-      <h2>월별 현황</h2>
+      <div class="view-title">
+        <h2>월별 현황</h2>
+        <p class="view-sub">선택한 달의 일자별 매출·지출과 구성 분석입니다.</p>
+      </div>
       <div class="filters">
-        <select id="monYear" class="input"></select>
-        <select id="monMonth" class="input"></select>
+        <select id="monYear" class="input" aria-label="연도"></select>
+        <select id="monMonth" class="input" aria-label="월"></select>
       </div>
     </div>
-    <div class="tiles" id="monTiles"></div>
+    <div id="monTiles"></div>
     <div class="card">
-      <div class="card-head"><h3>일자별 수입·지출</h3></div>
+      <div class="card-head">
+        <h3>일자별 매출·지출</h3>
+        <span class="card-meta">단위: 원</span>
+      </div>
       <div id="monChart" class="chart-box"></div>
     </div>
     <div class="grid-2">
       <div class="card">
-        <div class="card-head"><h3>매출구분별 수입</h3></div>
+        <div class="card-head"><h3>매출구분별 매출</h3></div>
         <div id="monIncBreak"></div>
       </div>
       <div class="card">
@@ -175,7 +244,7 @@
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>일자별 상세 테이블</h3></div>
+      <div class="card-head"><h3>일자별 상세</h3></div>
       <div class="table-wrap" id="monTable"></div>
     </div>
   </section>
@@ -183,10 +252,13 @@
   <!-- ================= 분기별 현황 ================= -->
   <section id="view-quarterly" class="view" hidden>
     <div class="view-head">
-      <h2>분기별 현황</h2>
+      <div class="view-title">
+        <h2>분기별 현황</h2>
+        <p class="view-sub">분기 내 월별 실적과 전분기 대비 증감입니다.</p>
+      </div>
       <div class="filters">
-        <select id="qtrYear" class="input"></select>
-        <select id="qtrQuarter" class="input">
+        <select id="qtrYear" class="input" aria-label="연도"></select>
+        <select id="qtrQuarter" class="input" aria-label="분기">
           <option value="1">1분기 (1~3월)</option>
           <option value="2">2분기 (4~6월)</option>
           <option value="3">3분기 (7~9월)</option>
@@ -194,14 +266,17 @@
         </select>
       </div>
     </div>
-    <div class="tiles" id="qtrTiles"></div>
+    <div id="qtrTiles"></div>
     <div class="card">
-      <div class="card-head"><h3>월별 수입·지출</h3></div>
+      <div class="card-head">
+        <h3>월별 매출·지출</h3>
+        <span class="card-meta">단위: 원</span>
+      </div>
       <div id="qtrChart" class="chart-box"></div>
     </div>
     <div class="grid-2">
       <div class="card">
-        <div class="card-head"><h3>매출구분별 수입</h3></div>
+        <div class="card-head"><h3>매출구분별 매출</h3></div>
         <div id="qtrIncBreak"></div>
       </div>
       <div class="card">
@@ -210,7 +285,7 @@
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>월별 상세 테이블</h3></div>
+      <div class="card-head"><h3>월별 상세</h3></div>
       <div class="table-wrap" id="qtrTable"></div>
     </div>
   </section>
@@ -218,60 +293,75 @@
   <!-- ================= 연도별 현황 ================= -->
   <section id="view-yearly" class="view" hidden>
     <div class="view-head">
-      <h2>연도별 현황</h2>
+      <div class="view-title">
+        <h2>연도별 현황</h2>
+        <p class="view-sub">연간 누계 실적과 월별 손익 추이입니다.</p>
+      </div>
       <div class="filters">
-        <select id="yrYear" class="input"></select>
+        <select id="yrYear" class="input" aria-label="연도"></select>
       </div>
     </div>
-    <div class="tiles" id="yrTiles"></div>
+    <div id="yrTiles"></div>
     <div class="card">
-      <div class="card-head"><h3>월별 수입·지출</h3></div>
+      <div class="card-head">
+        <h3>월별 매출·지출</h3>
+        <span class="card-meta">단위: 원</span>
+      </div>
       <div id="yrChart" class="chart-box"></div>
     </div>
     <div class="grid-2">
       <div class="card">
-        <div class="card-head"><h3>매출구분별 수입</h3></div>
+        <div class="card-head"><h3>매출구분별 매출</h3></div>
         <div id="yrIncBreak"></div>
       </div>
       <div class="card">
-        <div class="card-head"><h3>거래처별 수입 TOP 10</h3></div>
+        <div class="card-head"><h3>거래처별 매출 TOP 10</h3></div>
         <div id="yrClientBreak"></div>
       </div>
     </div>
     <div class="card">
-      <div class="card-head"><h3>월별 손익 테이블</h3></div>
+      <div class="card-head"><h3>월별 손익</h3></div>
       <div class="table-wrap" id="yrTable"></div>
     </div>
   </section>
 
   <!-- ================= 코드관리 ================= -->
   <section id="view-codes" class="view" hidden>
-    <div class="view-head"><h2>코드관리</h2></div>
-    <p class="form-hint">수입/지출 등록 화면의 드랍다운 항목을 관리합니다. 매출구분·거래품목은 상위 유형별로 관리됩니다.</p>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>코드관리</h2>
+        <p class="view-sub">매출·지출 등록 화면의 드랍다운 항목을 관리합니다. 매출구분과 거래품목은 상위 유형별로 구분됩니다.</p>
+      </div>
+    </div>
     <div id="codesArea" class="codes-grid"></div>
   </section>
 
   <!-- ================= 엑셀 가져오기 ================= -->
   <section id="view-import" class="view" hidden>
-    <div class="view-head"><h2>엑셀 가져오기 (마이그레이션)</h2></div>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>엑셀 가져오기</h2>
+        <p class="view-sub">기존 경영관리 엑셀 파일의 매출·지출 내역을 이 시스템으로 이관합니다.</p>
+      </div>
+    </div>
     <div class="card">
-      <p class="form-hint" style="margin-top:0">
-        기존에 관리하던 엑셀 경영관리 파일(<b>.xlsm / .xlsx</b>)을 업로드하면
-        <b>매출집계</b>·<b>지출집계</b> 시트의 내역을 읽어 DB로 이관합니다.
-        같은 파일을 다시 올려도 이미 등록된 내역은 건너뛰므로 안심하고 재실행할 수 있습니다.
-        파일에 새로 등장하는 매출구분·거래품목·거래처 등의 코드는 코드관리에 자동 추가됩니다.
-      </p>
+      <ul class="guide-list">
+        <li><b>매출집계</b>·<b>지출집계</b> 형식 시트(‘영업일자’와 ‘매출액’ 또는 ‘지출금액’ 열이 있는 시트)를 자동으로 찾아 읽습니다.</li>
+        <li>같은 파일을 다시 올려도 <b>이미 등록된 내역은 건너뜁니다.</b> 안심하고 여러 번 실행할 수 있습니다.</li>
+        <li>파일에 새로 등장하는 매출구분·거래품목·거래처 등의 코드는 <b>코드관리에 자동 추가</b>됩니다.</li>
+      </ul>
       <div class="import-drop" id="importDrop">
         <input type="file" id="importFile" accept=".xlsx,.xlsm" hidden>
-        <p><b>여기에 엑셀 파일을 끌어다 놓거나</b></p>
+        <p class="drop-title">엑셀 파일을 여기에 끌어다 놓으세요</p>
+        <p class="drop-sub">.xlsm · .xlsx 형식 지원</p>
         <button class="btn primary" id="importBrowse">파일 선택</button>
-        <p class="form-hint" id="importFileName"></p>
+        <p class="drop-file" id="importFileName"></p>
       </div>
       <div id="importPreview" hidden>
-        <h3>파일 분석 결과</h3>
+        <div class="card-head"><h3>분석 결과</h3></div>
         <div id="importSummary"></div>
         <div class="form-actions">
-          <button class="btn primary" id="importCommit">DB에 저장 (마이그레이션 실행)</button>
+          <button class="btn primary" id="importCommit">DB에 저장</button>
           <button class="btn ghost" id="importCancel">취소</button>
         </div>
       </div>

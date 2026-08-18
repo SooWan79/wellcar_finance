@@ -1,4 +1,4 @@
-"""웰카오디오 수입지출관리시스템 - Flask 백엔드"""
+"""웰카오디오 매출/지출관리 시스템 - Flask 백엔드"""
 import os
 import sqlite3
 from datetime import date, datetime, timedelta
@@ -177,7 +177,7 @@ def parse_body(fields, required):
     return data, None
 
 
-# ---------------------------------------------------------------- CRUD: 수입
+# ---------------------------------------------------------------- CRUD: 매출
 @app.route("/api/incomes", methods=["GET"])
 def list_incomes():
     return jsonify(_list_entries("incomes"))
@@ -627,5 +627,5 @@ init_db()
 
 if __name__ == "__main__":
     port = int(os.environ.get("PORT", 8000))
-    print(f"* 웰카오디오 수입지출관리시스템: http://localhost:{port}")
+    print(f"* 웰카오디오 매출/지출관리 시스템: http://localhost:{port}")
     app.run(host="0.0.0.0", port=port, debug=False)

@@ -92,7 +92,7 @@
       }));
       const lbl = el("text", {
         x: m.left - 8, y: gy + 4, "text-anchor": "end",
-        "font-size": 11, fill: "var(--text-muted)",
+        "font-size": 11, fill: "var(--ink-3)",
       });
       lbl.textContent = fmtTick(tv);
       svg.appendChild(lbl);
@@ -147,7 +147,7 @@
       if (i % xTickEvery === 0) {
         const t = el("text", {
           x: gx + slot / 2, y: m.top + ih + 18, "text-anchor": "middle",
-          "font-size": 11, fill: "var(--text-muted)",
+          "font-size": 11, fill: "var(--ink-3)",
         });
         t.textContent = opts.xLabelFn ? opts.xLabelFn(lab, i) : lab;
         svg.appendChild(t);
@@ -166,6 +166,8 @@
     }
     const total = items.reduce((a, b) => a + b.value, 0) || 1;
     const max = Math.max(...items.map(i => i.value), 1);
+    const list = document.createElement("div");
+    list.className = "hbar-list";
     for (const it of items) {
       const row = document.createElement("div");
       row.className = "hbar-row";
@@ -173,12 +175,13 @@
       row.innerHTML =
         `<span class="hb-name" title="${it.name}">${it.name}</span>` +
         `<span class="hb-track"><span class="hb-fill" style="width:${(it.value / max * 100).toFixed(1)}%;background:${color}"></span></span>` +
-        `<span class="hb-val">${fmtWon(it.value)} <span style="color:var(--text-muted)">(${pct}%)</span></span>`;
+        `<span class="hb-val">${fmtWon(it.value)}<span class="hb-pct">${pct}%</span></span>`;
       row.addEventListener("mousemove", evt =>
         showTip(evt, it.name, [{ name: `${it.cnt || 0}건 · ${pct}%`, color, value: it.value }]));
       row.addEventListener("mouseleave", hideTip);
-      container.appendChild(row);
+      list.appendChild(row);
     }
+    container.appendChild(list);
   }
 
   window.WCharts = { groupedBars, hBars, fmtWon };
