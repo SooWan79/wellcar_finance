@@ -1,0 +1,2 @@
+# 윈도 배치 파일은 CRLF 줄바꿈이어야 cmd.exe가 제대로 읽는다
+*.bat text eol=crlf

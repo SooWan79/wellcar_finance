@@ -41,14 +41,20 @@ def seed():
                 pay = rng.choices(["현금", "카드", "계좌입금"], weights=[3, 4, 3])[0]
                 tax = "Y" if pay == "카드" or rng.random() < 0.3 else "N"
                 vat = round(amount * 10 / 110) if (pay == "카드" or tax == "Y") else 0
+                client = rng.choice(CLIENTS)
+                # 업체 거래 일부는 외상(미수금): 최근일수록 아직 못 받은 경우가 많게
+                receivable = 0
+                if pay == "계좌입금" and client not in ("개인", "방문") and rng.random() < (
+                        0.6 if (today - d).days < 45 else 0.04):
+                    receivable = amount if rng.random() < 0.7 else amount // 2
                 db.execute(
                     """INSERT INTO incomes(trx_date, income_type, category, manufacturer,
                        product_model, client, amount, vat, net_amount, account, payment_type,
-                       tax_invoice, memo, quantity, unit_price)
-                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?)""",
+                       tax_invoice, memo, quantity, unit_price, receivable, created_by)
+                       VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,1,?,?,'데모')""",
                     (d.isoformat(), "서비스제공" if is_service else "상품판매", cat,
-                     rng.choice(MAKERS), "", rng.choice(CLIENTS), amount, vat,
-                     amount - vat, "국민(법인)", pay, tax, "데모 데이터", amount))
+                     rng.choice(MAKERS), "", client, amount, vat,
+                     amount - vat, "국민(법인)", pay, tax, "데모 데이터", amount, receivable))
                 n_inc += 1
             for _ in range(rng.randint(1, 3)):
                 etype, item = rng.choice(EXPENSE_ITEMS)
@@ -57,13 +63,16 @@ def seed():
                     amount = rng.randrange(150, 300) * 10000 if d.day == 25 else 0
                 if amount == 0:
                     continue
+                # 제품 매입 일부는 외상(미지급금)
+                payable = amount if (etype == "제품원가" and (today - d).days < 40
+                                     and rng.random() < 0.5) else 0
                 db.execute(
                     """INSERT INTO expenses(trx_date, expense_type, item, payment_type,
-                       client, amount, memo, quantity, unit_price)
-                       VALUES (?,?,?,?,?,?,?,1,?)""",
+                       client, amount, memo, quantity, unit_price, payable, created_by)
+                       VALUES (?,?,?,?,?,?,?,1,?,?,'데모')""",
                     (d.isoformat(), etype, item, rng.choice(["현금", "카드", "계좌입금"]),
                      rng.choice(["해덕", "마트", "식당", "주유소", "기타"]), amount,
-                     "데모 데이터", amount))
+                     "데모 데이터", amount, payable))
                 n_exp += 1
         d += timedelta(days=1)
     db.commit()

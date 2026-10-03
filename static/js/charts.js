@@ -15,6 +15,12 @@
     return "₩" + Math.round(v).toLocaleString("ko-KR");
   }
 
+  // 거래처명 등 데이터 값은 HTML로 해석되지 않게 이스케이프
+  function esc(s) {
+    return String(s ?? "").replace(/[&<>"']/g,
+      c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+  }
+
   // 축 눈금: 0을 포함한 "nice" 스텝
   function niceTicks(maxV, count) {
     if (maxV <= 0) maxV = 1;
@@ -38,8 +44,8 @@
 
   function showTip(evt, title, rows) {
     const t = tooltip();
-    t.innerHTML = `<div class="tt-title">${title}</div>` + rows.map(r =>
-      `<div class="tt-row"><span style="color:${r.color}">●</span> <span>${r.name}</span>` +
+    t.innerHTML = `<div class="tt-title">${esc(title)}</div>` + rows.map(r =>
+      `<div class="tt-row"><span style="color:${r.color}">●</span> <span>${esc(r.name)}</span>` +
       `<span class="v">${fmtWon(r.value)}</span></div>`).join("");
     t.hidden = false;
     const pad = 14;
@@ -173,7 +179,7 @@
       row.className = "hbar-row";
       const pct = (it.value / total * 100).toFixed(1);
       row.innerHTML =
-        `<span class="hb-name" title="${it.name}">${it.name}</span>` +
+        `<span class="hb-name" title="${esc(it.name)}">${esc(it.name)}</span>` +
         `<span class="hb-track"><span class="hb-fill" style="width:${(it.value / max * 100).toFixed(1)}%;background:${color}"></span></span>` +
         `<span class="hb-val">${fmtWon(it.value)}<span class="hb-pct">${pct}%</span></span>`;
       row.addEventListener("mousemove", evt =>

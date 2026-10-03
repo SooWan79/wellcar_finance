@@ -8,6 +8,43 @@
 <link rel="stylesheet" href="css/style.css">
 </head>
 <body>
+
+<!-- ================= 로그인 / 처음 사용 설정 ================= -->
+<div id="authScreen" class="auth-screen" hidden>
+  <div class="auth-card">
+    <div class="brand auth-brand">
+      <span class="brand-mark">W</span>
+      <span class="brand-text">
+        <span class="brand-name">웰카오디오 매출/지출관리 시스템</span>
+        <span class="brand-sub">WellCar Audio Sales &amp; Expense Management</span>
+      </span>
+    </div>
+
+    <form id="loginForm" class="auth-form" hidden>
+      <h1>로그인</h1>
+      <p class="auth-sub" id="loginNotice">계정이 없으면 관리자에게 만들어 달라고 요청하세요.</p>
+      <label><span class="lbl">아이디</span><input id="loginUser" autocomplete="username" required></label>
+      <label><span class="lbl">비밀번호</span><input id="loginPass" type="password" autocomplete="current-password" required></label>
+      <label class="check"><input type="checkbox" id="loginRemember" checked> 이 기기에서 로그인 유지 (30일)</label>
+      <button type="submit" class="btn primary block" id="loginSubmit">로그인</button>
+      <p class="auth-error" id="loginError" role="alert"></p>
+    </form>
+
+    <form id="setupForm" class="auth-form" hidden>
+      <h1>처음 사용 설정</h1>
+      <p class="auth-sub">관리자 계정을 만듭니다. <b>설정 코드</b>는 서버를 실행한 창(클라우드라면 서버 로그)에 표시되어 있습니다.</p>
+      <label><span class="lbl">설정 코드</span><input id="setupCode" placeholder="예: ABCD-EFGH" autocomplete="off" required></label>
+      <label><span class="lbl">이름</span><input id="setupName" placeholder="예: 홍길동" maxlength="30"></label>
+      <label><span class="lbl">아이디</span><input id="setupUser" autocomplete="username" placeholder="한글·영문·숫자 2~30자" required></label>
+      <label><span class="lbl">비밀번호 (8자 이상)</span><input id="setupPass" type="password" autocomplete="new-password" minlength="8" required></label>
+      <label><span class="lbl">비밀번호 확인</span><input id="setupPass2" type="password" autocomplete="new-password" minlength="8" required></label>
+      <button type="submit" class="btn primary block">관리자 계정 만들기</button>
+      <p class="auth-error" id="setupError" role="alert"></p>
+    </form>
+  </div>
+</div>
+
+<div id="appShell" hidden>
 <header class="topbar">
   <div class="topbar-inner">
     <div class="brand">
@@ -17,17 +54,31 @@
         <span class="brand-sub">WellCar Audio Sales &amp; Expense Management</span>
       </span>
     </div>
-    <button class="theme-btn" id="themeToggle" title="화면 모드 전환" aria-label="화면 모드 전환">🌓 자동</button>
+    <div class="topbar-actions">
+      <button class="theme-btn" id="themeToggle" title="화면 모드 전환" aria-label="화면 모드 전환">🌓 자동</button>
+      <div class="user-menu">
+        <button class="user-btn" id="userBtn" aria-haspopup="menu" aria-expanded="false" aria-controls="userMenu">
+          <span class="user-avatar" id="userAvatar" aria-hidden="true"></span>
+          <span class="user-text"><span class="user-name" id="userName"></span><span class="user-role" id="userRole"></span></span>
+        </button>
+        <div class="menu" id="userMenu" role="menu" hidden>
+          <button type="button" role="menuitem" id="menuPassword">비밀번호 변경</button>
+          <button type="button" role="menuitem" id="menuLogout">로그아웃</button>
+        </div>
+      </div>
+    </div>
   </div>
   <nav class="tabs" id="mainTabs" aria-label="주요 메뉴">
     <button data-view="dashboard" class="tab active">대시보드</button>
     <button data-view="income" class="tab">매출관리</button>
     <button data-view="expense" class="tab">지출관리</button>
+    <button data-view="balances" class="tab">미수·미지급</button>
     <button data-view="monthly" class="tab">월별 현황</button>
     <button data-view="quarterly" class="tab">분기별 현황</button>
     <button data-view="yearly" class="tab">연도별 현황</button>
-    <button data-view="codes" class="tab">코드관리</button>
-    <button data-view="import" class="tab">엑셀 가져오기</button>
+    <button data-view="data" class="tab">데이터 관리</button>
+    <button data-view="codes" class="tab need-admin">코드관리</button>
+    <button data-view="users" class="tab need-admin">사용자관리</button>
   </nav>
 </header>
 
@@ -64,14 +115,14 @@
       <div class="card">
         <div class="card-head">
           <h3>당일 매출 내역 <span class="count-badge" id="dashIncCount"></span></h3>
-          <button class="btn small primary" id="dashAddIncome">+ 매출 등록</button>
+          <button class="btn small primary need-staff" id="dashAddIncome">+ 매출 등록</button>
         </div>
         <div class="table-wrap" id="dashIncomeList"></div>
       </div>
       <div class="card">
         <div class="card-head">
           <h3>당일 지출 내역 <span class="count-badge" id="dashExpCount"></span></h3>
-          <button class="btn small primary" id="dashAddExpense">+ 지출 등록</button>
+          <button class="btn small primary need-staff" id="dashAddExpense">+ 지출 등록</button>
         </div>
         <div class="table-wrap" id="dashExpenseList"></div>
       </div>
@@ -83,12 +134,15 @@
     <div class="view-head">
       <div class="view-title">
         <h2>매출관리</h2>
-        <p class="view-sub">매출을 건별로 등록하고 최근 내역을 확인·수정합니다.</p>
+        <p class="view-sub">매출을 건별로 등록하고, 기간·검색으로 전체 내역을 찾아 수정합니다.</p>
       </div>
     </div>
     <div class="grid-form">
-      <div class="card">
-        <div class="card-head"><h3 id="incomeFormTitle">매출 등록</h3></div>
+      <div class="card need-staff">
+        <div class="card-head">
+          <h3 id="incomeFormTitle">매출 등록</h3>
+          <span class="form-meta" id="incMeta"></span>
+        </div>
         <form id="incomeForm" class="entry-form">
           <input type="hidden" id="incId">
 
@@ -110,8 +164,8 @@
             <div class="form-grid">
               <label><span class="lbl">거래통화</span><select id="incCurrency"></select></label>
               <label><span class="lbl">CNY 기준환율</span><input type="number" id="incRate" step="0.01" value="1"></label>
-              <label><span class="lbl">수량</span><input type="number" id="incQty" step="1" value="1"></label>
-              <label><span class="lbl">단가</span><input type="number" id="incUnitPrice" step="1" value="0"></label>
+              <label><span class="lbl">수량</span><input type="number" id="incQty" step="any" value="1"></label>
+              <label><span class="lbl">단가</span><input type="number" id="incUnitPrice" step="any" value="0"></label>
               <label class="span-2 field-strong"><span class="lbl">매출액 (KRW) <em>*</em></span><input type="number" id="incAmount" step="1"></label>
             </div>
             <p class="form-hint">CNY 선택 시 <b>매출액 = 수량 × 단가 × 기준환율</b>로 자동 계산됩니다.</p>
@@ -124,9 +178,10 @@
               <label><span class="lbl">세금계산서</span><select id="incTaxInvoice"><option value="N">N</option><option value="Y">Y</option></select></label>
               <label><span class="lbl">부가세</span><input type="number" id="incVat" step="1"></label>
               <label><span class="lbl">순매출액</span><input type="number" id="incNet" step="1" readonly class="ro" tabindex="-1"></label>
-              <label class="span-2"><span class="lbl">계좌</span><select id="incAccount"></select></label>
+              <label><span class="lbl">계좌</span><select id="incAccount"></select></label>
+              <label><span class="lbl">미수금 <button type="button" class="link-btn" id="incAllDue">전액</button></span><input type="number" id="incReceivable" step="1" min="0" value="0"></label>
             </div>
-            <p class="form-hint">결제유형이 <b>카드</b>이거나 세금계산서가 <b>Y</b>이면 부가세(매출액 × 10/110)가 자동 계산됩니다.</p>
+            <p class="form-hint">결제유형이 <b>카드</b>이거나 세금계산서가 <b>Y</b>이면 부가세(매출액 × 10/110)가 자동 계산됩니다. 아직 받지 못한 금액은 <b>미수금</b>에 적으세요.</p>
           </fieldset>
 
           <fieldset class="form-section">
@@ -142,12 +197,24 @@
           </div>
         </form>
       </div>
-      <div class="card">
+      <div class="card list-card">
         <div class="card-head">
-          <h3>최근 매출 내역</h3>
-          <input type="search" id="incSearch" class="input" placeholder="거래처 · 적요 검색">
+          <h3>매출 내역 <span class="count-badge" id="incCount"></span></h3>
+          <button class="btn small" id="incExport">엑셀로 받기</button>
         </div>
-        <div class="table-wrap tall" id="incomeList"></div>
+        <div class="list-filters">
+          <select class="input" id="incPeriod" aria-label="기간"></select>
+          <span class="date-range">
+            <input type="date" class="input" id="incFrom" aria-label="시작일">
+            <span class="range-sep">~</span>
+            <input type="date" class="input" id="incTo" aria-label="종료일">
+          </span>
+          <select class="input" id="incTypeFilter" aria-label="매출유형"></select>
+          <input type="search" class="input grow" id="incSearch" placeholder="거래처·적요·모델·금액 검색">
+          <label class="check"><input type="checkbox" id="incOutstanding"> 미수금 남은 건만</label>
+        </div>
+        <div class="table-wrap tall" id="incList"></div>
+        <div class="pager" id="incPager"></div>
       </div>
     </div>
   </section>
@@ -157,12 +224,15 @@
     <div class="view-head">
       <div class="view-title">
         <h2>지출관리</h2>
-        <p class="view-sub">지출을 건별로 등록하고 최근 내역을 확인·수정합니다.</p>
+        <p class="view-sub">지출을 건별로 등록하고, 기간·검색으로 전체 내역을 찾아 수정합니다.</p>
       </div>
     </div>
     <div class="grid-form">
-      <div class="card">
-        <div class="card-head"><h3 id="expenseFormTitle">지출 등록</h3></div>
+      <div class="card need-staff">
+        <div class="card-head">
+          <h3 id="expenseFormTitle">지출 등록</h3>
+          <span class="form-meta" id="expMeta"></span>
+        </div>
         <form id="expenseForm" class="entry-form">
           <input type="hidden" id="expId">
 
@@ -183,18 +253,20 @@
             <div class="form-grid">
               <label><span class="lbl">거래통화</span><select id="expCurrency"></select></label>
               <label><span class="lbl">CNY 기준환율</span><input type="number" id="expRate" step="0.01" value="1"></label>
-              <label><span class="lbl">수량</span><input type="number" id="expQty" step="1" value="1"></label>
-              <label><span class="lbl">단가</span><input type="number" id="expUnitPrice" step="1" value="0"></label>
+              <label><span class="lbl">수량</span><input type="number" id="expQty" step="any" value="1"></label>
+              <label><span class="lbl">단가</span><input type="number" id="expUnitPrice" step="any" value="0"></label>
               <label class="span-2 field-strong"><span class="lbl">지출금액 (KRW) <em>*</em></span><input type="number" id="expAmount" step="1"></label>
             </div>
             <p class="form-hint">CNY 선택 시 <b>지출금액 = 수량 × 단가 × 기준환율</b>로 자동 계산됩니다.</p>
           </fieldset>
 
           <fieldset class="form-section">
-            <legend>메모</legend>
+            <legend>정산 · 메모</legend>
             <div class="form-grid">
-              <label class="span-2"><span class="lbl">적요</span><input type="text" id="expMemo" placeholder="용도, 비고 등"></label>
+              <label><span class="lbl">미지급금 <button type="button" class="link-btn" id="expAllDue">전액</button></span><input type="number" id="expPayable" step="1" min="0" value="0"></label>
+              <label><span class="lbl">적요</span><input type="text" id="expMemo" placeholder="용도, 비고 등"></label>
             </div>
+            <p class="form-hint">외상으로 사고 아직 지급하지 않은 금액은 <b>미지급금</b>에 적으세요.</p>
           </fieldset>
 
           <div class="form-actions">
@@ -203,13 +275,60 @@
           </div>
         </form>
       </div>
-      <div class="card">
+      <div class="card list-card">
         <div class="card-head">
-          <h3>최근 지출 내역</h3>
-          <input type="search" id="expSearch" class="input" placeholder="거래처 · 적요 검색">
+          <h3>지출 내역 <span class="count-badge" id="expCount"></span></h3>
+          <button class="btn small" id="expExport">엑셀로 받기</button>
         </div>
-        <div class="table-wrap tall" id="expenseList"></div>
+        <div class="list-filters">
+          <select class="input" id="expPeriod" aria-label="기간"></select>
+          <span class="date-range">
+            <input type="date" class="input" id="expFrom" aria-label="시작일">
+            <span class="range-sep">~</span>
+            <input type="date" class="input" id="expTo" aria-label="종료일">
+          </span>
+          <select class="input" id="expTypeFilter" aria-label="지출유형"></select>
+          <input type="search" class="input grow" id="expSearch" placeholder="거래처·적요·품목·금액 검색">
+          <label class="check"><input type="checkbox" id="expOutstanding"> 미지급금 남은 건만</label>
+        </div>
+        <div class="table-wrap tall" id="expList"></div>
+        <div class="pager" id="expPager"></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ================= 미수금·미지급금 ================= -->
+  <section id="view-balances" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>미수금·미지급금</h2>
+        <p class="view-sub">아직 받지 못한 매출(미수금)과 아직 지급하지 않은 지출(미지급금)입니다. 입금·지급이 끝나면 <b>완료</b>를 누르세요.</p>
+      </div>
+    </div>
+    <div id="balTiles"></div>
+    <div class="grid-2">
+      <div class="card">
+        <div class="card-head"><h3>거래처별 미수금</h3></div>
+        <div id="balRecClients"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>거래처별 미지급금</h3></div>
+        <div id="balPayClients"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h3>미수금 내역 <span class="count-badge" id="balRecCount"></span></h3>
+        <span class="card-meta">오래된 순 · 경과일은 영업일자 기준</span>
+      </div>
+      <div class="table-wrap" id="balRecList"></div>
+    </div>
+    <div class="card">
+      <div class="card-head">
+        <h3>미지급금 내역 <span class="count-badge" id="balPayCount"></span></h3>
+        <span class="card-meta">오래된 순</span>
+      </div>
+      <div class="table-wrap" id="balPayList"></div>
     </div>
   </section>
 
@@ -325,35 +444,52 @@
     </div>
   </section>
 
-  <!-- ================= 코드관리 ================= -->
-  <section id="view-codes" class="view" hidden>
+  <!-- ================= 데이터 관리 ================= -->
+  <section id="view-data" class="view" hidden>
     <div class="view-head">
       <div class="view-title">
-        <h2>코드관리</h2>
-        <p class="view-sub">매출·지출 등록 화면의 드랍다운 항목을 관리합니다. 매출구분과 거래품목은 상위 유형별로 구분됩니다.</p>
+        <h2>데이터 관리</h2>
+        <p class="view-sub">장부를 엑셀로 내보냅니다. 관리자는 엑셀 가져오기와 백업·복원도 여기서 합니다.</p>
       </div>
     </div>
-    <div id="codesArea" class="codes-grid"></div>
-  </section>
 
-  <!-- ================= 엑셀 가져오기 ================= -->
-  <section id="view-import" class="view" hidden>
-    <div class="view-head">
-      <div class="view-title">
-        <h2>엑셀 가져오기</h2>
-        <p class="view-sub">기존 경영관리 엑셀 파일의 매출·지출 내역을 이 시스템으로 이관합니다.</p>
-      </div>
-    </div>
     <div class="card">
+      <div class="card-head">
+        <h3>엑셀 내보내기</h3>
+        <span class="card-meta">세무사 전달 · 보관용</span>
+      </div>
+      <div class="list-filters export-form">
+        <select class="input" id="xpPeriod" aria-label="기간"></select>
+        <span class="date-range">
+          <input type="date" class="input" id="xpFrom" aria-label="시작일">
+          <span class="range-sep">~</span>
+          <input type="date" class="input" id="xpTo" aria-label="종료일">
+        </span>
+        <select class="input" id="xpKind" aria-label="내보낼 내용">
+          <option value="all">매출 + 지출</option>
+          <option value="incomes">매출만</option>
+          <option value="expenses">지출만</option>
+        </select>
+        <button class="btn primary" id="xpDownload">엑셀 파일 받기</button>
+      </div>
+      <p class="form-hint">요약 · 월별손익 · 매출내역 · 지출내역 시트로 저장됩니다. 내보낸 파일은 <b>엑셀 가져오기</b>(관리자)로 다시 불러올 수 있습니다.</p>
+    </div>
+
+    <div class="card need-admin">
+      <div class="card-head">
+        <h3>엑셀 가져오기</h3>
+        <span class="card-meta">기존 경영관리 엑셀 → 이 시스템</span>
+      </div>
       <ul class="guide-list">
-        <li><b>매출집계</b>·<b>지출집계</b> 형식 시트(‘영업일자’와 ‘매출액’ 또는 ‘지출금액’ 열이 있는 시트)를 자동으로 찾아 읽습니다.</li>
-        <li>같은 파일을 다시 올려도 <b>이미 등록된 내역은 건너뜁니다.</b> 안심하고 여러 번 실행할 수 있습니다.</li>
-        <li>파일에 새로 등장하는 매출구분·거래품목·거래처 등의 코드는 <b>코드관리에 자동 추가</b>됩니다.</li>
+        <li><b>매출집계</b>·<b>지출집계</b> 형식 시트(‘영업일자’와 ‘매출액’ 또는 ‘지출금액’ 열이 있는 시트)를 찾아 읽습니다. 여러 연도 파일을 한 번에 올려도 됩니다.</li>
+        <li>저장하기 전에 <b>시트별 건수·금액</b>을 보여 주고, 엑셀의 <b>경영분석 월별 합계</b>와 맞는지 대조합니다.</li>
+        <li>같은 파일을 다시 올려도 <b>이미 등록된 내역은 건너뜁니다.</b> 저장 직전 상태는 자동으로 백업됩니다.</li>
+        <li>매출집계의 <b>미수금</b>은 미수금으로, 매출 행의 <b>미지급금</b>은 적요에 기록됩니다. 새로 나온 코드는 코드관리에 자동 추가됩니다.</li>
       </ul>
       <div class="import-drop" id="importDrop">
-        <input type="file" id="importFile" accept=".xlsx,.xlsm" hidden>
+        <input type="file" id="importFile" accept=".xlsx,.xlsm" multiple hidden>
         <p class="drop-title">엑셀 파일을 여기에 끌어다 놓으세요</p>
-        <p class="drop-sub">.xlsm · .xlsx 형식 지원</p>
+        <p class="drop-sub">.xlsm · .xlsx 형식 지원 · 여러 파일 가능</p>
         <button class="btn primary" id="importBrowse">파일 선택</button>
         <p class="drop-file" id="importFileName"></p>
       </div>
@@ -367,9 +503,95 @@
       </div>
       <div id="importResult" hidden></div>
     </div>
+
+    <div class="card need-admin">
+      <div class="card-head">
+        <h3>백업 · 복원</h3>
+        <div class="head-actions">
+          <button class="btn small" id="backupNow">지금 백업</button>
+          <button class="btn small" id="backupUploadBtn">백업 파일로 복원…</button>
+          <input type="file" id="backupUpload" accept=".db,.sqlite,.sqlite3" hidden>
+        </div>
+      </div>
+      <p class="backup-status" id="backupStatus"></p>
+      <div class="table-wrap" id="backupList"></div>
+    </div>
+  </section>
+
+  <!-- ================= 코드관리 ================= -->
+  <section id="view-codes" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>코드관리</h2>
+        <p class="view-sub">매출·지출 등록 화면의 드랍다운 항목을 관리합니다. 매출구분과 거래품목은 상위 유형별로 구분됩니다.</p>
+      </div>
+    </div>
+    <div id="codesArea" class="codes-grid"></div>
+  </section>
+
+  <!-- ================= 사용자관리 ================= -->
+  <section id="view-users" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>사용자관리</h2>
+        <p class="view-sub">직원별 계정을 만들고 권한을 정합니다. 퇴사자는 삭제 대신 <b>사용 중지</b>하면 기록이 남습니다.</p>
+      </div>
+      <button class="btn primary" id="userAdd">+ 사용자 추가</button>
+    </div>
+    <div class="card">
+      <div class="table-wrap" id="userList"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>권한 안내</h3></div>
+      <ul class="guide-list role-guide">
+        <li><b>관리자</b> — 모든 기능 (사용자관리, 코드관리, 엑셀 가져오기, 백업·복원 포함)</li>
+        <li><b>직원</b> — 매출·지출 등록·수정·삭제, 미수·미지급 처리, 조회, 엑셀 내보내기</li>
+        <li><b>조회 전용</b> — 조회와 엑셀 내보내기만 (세무사·동업자 등)</li>
+      </ul>
+    </div>
   </section>
 
 </main>
+</div>
+
+<!-- ================= 대화상자 ================= -->
+<dialog id="pwDialog" class="dialog">
+  <form method="dialog" id="pwForm" class="dialog-form">
+    <h3>비밀번호 변경</h3>
+    <label><span class="lbl">현재 비밀번호</span><input type="password" id="pwCurrent" autocomplete="current-password" required></label>
+    <label><span class="lbl">새 비밀번호 (8자 이상)</span><input type="password" id="pwNew" autocomplete="new-password" minlength="8" required></label>
+    <label><span class="lbl">새 비밀번호 확인</span><input type="password" id="pwNew2" autocomplete="new-password" minlength="8" required></label>
+    <p class="form-hint">바꾸면 다른 기기의 로그인은 모두 해제됩니다.</p>
+    <p class="auth-error" id="pwError" role="alert"></p>
+    <div class="form-actions">
+      <button type="submit" class="btn primary" value="ok">변경</button>
+      <button type="button" class="btn ghost" data-close>취소</button>
+    </div>
+  </form>
+</dialog>
+
+<dialog id="userDialog" class="dialog">
+  <form method="dialog" id="userForm" class="dialog-form">
+    <h3 id="userDialogTitle">사용자 추가</h3>
+    <input type="hidden" id="udId">
+    <label><span class="lbl">이름</span><input id="udName" maxlength="30" placeholder="예: 김직원"></label>
+    <label><span class="lbl">아이디</span><input id="udUser" autocomplete="off" placeholder="한글·영문·숫자 2~30자" required></label>
+    <label><span class="lbl">권한</span>
+      <select id="udRole">
+        <option value="staff">직원</option>
+        <option value="viewer">조회 전용</option>
+        <option value="admin">관리자</option>
+      </select>
+    </label>
+    <label><span class="lbl" id="udPassLabel">비밀번호 (8자 이상)</span><input type="password" id="udPass" autocomplete="new-password" minlength="8"></label>
+    <label class="check" id="udActiveWrap"><input type="checkbox" id="udActive" checked> 사용 중 (끄면 로그인할 수 없음)</label>
+    <p class="auth-error" id="udError" role="alert"></p>
+    <div class="form-actions">
+      <button type="submit" class="btn primary" value="ok">저장</button>
+      <button type="button" class="btn ghost" data-close>취소</button>
+    </div>
+  </form>
+</dialog>
 
 <datalist id="clientList"></datalist>
 <div id="tooltip" class="tooltip" hidden></div>

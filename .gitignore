@@ -2,3 +2,6 @@ __pycache__/
 *.pyc
 wellcar.db
 .venv/
+wellcar.db-journal
+backups/
+.wellcar_secret_key
