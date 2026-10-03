@@ -163,7 +163,7 @@
             <legend>금액</legend>
             <div class="form-grid">
               <label><span class="lbl">거래통화</span><select id="incCurrency"></select></label>
-              <label><span class="lbl">CNY 기준환율</span><input type="number" id="incRate" step="0.01" value="1"></label>
+              <label><span class="lbl">CNY 기준환율</span><input type="number" id="incRate" step="any" min="0" value="1"></label>
               <label><span class="lbl">수량</span><input type="number" id="incQty" step="any" value="1"></label>
               <label><span class="lbl">단가</span><input type="number" id="incUnitPrice" step="any" value="0"></label>
               <label class="span-2 field-strong"><span class="lbl">매출액 (KRW) <em>*</em></span><input type="number" id="incAmount" step="1"></label>
@@ -252,7 +252,7 @@
             <legend>금액</legend>
             <div class="form-grid">
               <label><span class="lbl">거래통화</span><select id="expCurrency"></select></label>
-              <label><span class="lbl">CNY 기준환율</span><input type="number" id="expRate" step="0.01" value="1"></label>
+              <label><span class="lbl">CNY 기준환율</span><input type="number" id="expRate" step="any" min="0" value="1"></label>
               <label><span class="lbl">수량</span><input type="number" id="expQty" step="any" value="1"></label>
               <label><span class="lbl">단가</span><input type="number" id="expUnitPrice" step="any" value="0"></label>
               <label class="span-2 field-strong"><span class="lbl">지출금액 (KRW) <em>*</em></span><input type="number" id="expAmount" step="1"></label>

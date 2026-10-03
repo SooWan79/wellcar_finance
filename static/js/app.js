@@ -709,18 +709,25 @@
   }
 
   const kpiRow = html => `<div class="kpi-row">${html}</div>`;
+
+  // 날짜를 빠르게 넘길 때 늦게 도착한 이전 응답이 화면을 덮지 않도록 화면별 요청 번호를 둔다
+  const latestReq = {};
+  const nextReq = key => (latestReq[key] = (latestReq[key] || 0) + 1);
+  const isStale = (key, n) => latestReq[key] !== n;
   const metricStrip = html => `<div class="metric-strip">${html}</div>`;
 
   // ---------------------------------------------------------------- 대시보드
   refreshers.dashboard = async function () {
     const d = $("dashDate").value || todayStr();
     $("dashDate").value = d;
+    const req = nextReq("dashboard");
     try {
       const [stats, incRes, expRes] = await Promise.all([
         api(`/api/stats/daily?date=${d}`),
         api(`/api/incomes?date=${d}&size=500`),
         api(`/api/expenses?date=${d}&size=500`),
       ]);
+      if (isStale("dashboard", req)) return;
       const day = stats.day.totals, prev = stats.prev_day.totals, mon = stats.month.totals;
       const out = stats.outstanding;
       const monthLabel = `${+d.slice(5, 7)}월 누계`;
@@ -877,8 +884,10 @@
   // ---------------------------------------------------------------- 월별
   refreshers.monthly = async function () {
     const y = +$("monYear").value, m = +$("monMonth").value;
+    const req = nextReq("monthly");
     try {
       const stats = await api(`/api/stats/monthly?year=${y}&month=${m}`);
+      if (isStale("monthly", req)) return;
       $("monTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전월대비");
       // 해당 월 전체 일자 축
       const daysInMonth = new Date(y, m, 0).getDate();
@@ -901,8 +910,10 @@
   // ---------------------------------------------------------------- 분기별
   refreshers.quarterly = async function () {
     const y = +$("qtrYear").value, q = +$("qtrQuarter").value;
+    const req = nextReq("quarterly");
     try {
       const stats = await api(`/api/stats/quarterly?year=${y}&quarter=${q}`);
+      if (isStale("quarterly", req)) return;
       $("qtrTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전분기대비");
       const map = new Map(stats.series.map(s => [s.key, s]));
       const labels = [];
@@ -924,8 +935,10 @@
   // ---------------------------------------------------------------- 연도별
   refreshers.yearly = async function () {
     const y = +$("yrYear").value;
+    const req = nextReq("yearly");
     try {
       const stats = await api(`/api/stats/yearly?year=${y}`);
+      if (isStale("yearly", req)) return;
       $("yrTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전년대비");
       const map = new Map(stats.series.map(s => [s.key, s]));
       const labels = [];
@@ -1290,7 +1303,8 @@
     try {
       const b = await api("/api/backups");
       $("backupStatus").innerHTML =
-        `자동 백업: <b>하루 1번</b>(사용 중일 때) · 종류별 최근 <b>${b.keep.auto}개</b> 보관 · ` +
+        `자동 백업: <b>하루 1번</b>(사용 중일 때) · 자동·수동 백업은 최근 <b>${b.keep.auto}개</b>, ` +
+        `가져오기·복원 직전 백업은 <b>${b.keep["pre-import"]}개</b>씩 보관 · ` +
         `마지막 자동 백업 <b>${b.last_auto ? esc(b.last_auto.slice(0, 16)) : "아직 없음"}</b><br>` +
         `<span class="muted">백업 폴더: ${esc(b.dir)} — 컴퓨터 고장에 대비해 가끔 [받기]로 다른 곳(USB·클라우드)에도 보관하세요.</span>`;
       if (!b.items.length) { $("backupList").innerHTML = '<p class="empty-msg">아직 백업이 없습니다.</p>'; return; }

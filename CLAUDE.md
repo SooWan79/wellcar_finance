@@ -38,7 +38,7 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
   개발 중에는 `WELLCAR_ADMIN_PASSWORD`로 admin 계정을 자동 생성하는 편이 쉽습니다.
 - `pkill -f app.py`는 쓰지 마세요. 명령줄에 같은 글자가 있는 셸 자신까지 죽습니다. PID 파일로 끄세요.
 - 변경 후 확인 (모두 통과해야 커밋):
-  - 백엔드: `.venv/bin/python -m unittest discover -s tests` (임시 DB, 20여 개)
+  - 백엔드: `.venv/bin/python -m unittest discover -s tests` (임시 DB, 26개)
   - 화면: 데모 DB 서버를 띄우고 `LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js`
     — 로그인, 10개 탭, 목록 페이지·검색, 미수금 완료, 내보내기, 백업, 재가져오기, 직원·조회 권한,
     모바일 폭 가로 넘침까지 확인하고 JS 콘솔 오류가 0건이어야 합니다. `SHOT_DIR`을 주면 캡처를 남깁니다.

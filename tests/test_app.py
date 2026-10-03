@@ -241,6 +241,50 @@ class EntryTest(Base):
         self.assertEqual(t["cash_income"], 30000)
 
 
+class HardeningTest(Base):
+    """이상한 입력에서도 500 오류 없이 400/403/404로 답하는지."""
+
+    def test_bad_bodies_and_values(self):
+        self.assertEqual(self.c.post("/api/incomes", headers=HDR, json=[1, 2]).status_code, 400)
+        anon = wellcar.app.test_client()
+        self.assertEqual(anon.post("/api/auth/login", headers=HDR, json=["admin"]).status_code, 401)
+        r = self.post(self.c, "/api/incomes", {"trx_date": "2026-03-02", "income_type": "기타", "amount": 1e20})
+        self.assertEqual(r.status_code, 400)
+        self.assertEqual(self.c.get("/api/incomes/99999999999999999999").status_code, 404)
+        self.assertEqual(self.post(self.c, "/api/users", {"username": "x1", "password": "pass-word-99",
+                                                          "role": ["admin"]}).status_code, 400)
+        uid = self.c.get("/api/users").get_json()[0]["id"]
+        self.assertEqual(self.put(self.c, f"/api/users/{uid}", {"active": "false"}).status_code, 400)
+        self.assertEqual(self.post(self.c, "/api/codes", {"code_group": 1, "code_value": 2}).status_code, 201)
+        for q in ("monthly?year=0&month=1", "quarterly?year=99999&quarter=1", "yearly?year=0"):
+            self.assertEqual(self.c.get(f"/api/stats/{q}").status_code, 400, q)
+
+    def test_amount_rounds_half_up_like_screen(self):
+        r = self.post(self.c, "/api/incomes", {"trx_date": "2026-03-02", "income_type": "기타", "amount": 1000.5})
+        self.assertEqual(r.get_json()["amount"], 1001)
+
+    def test_setup_code_non_ascii(self):
+        """한글 입력 상태로 설정 코드를 넣어도 500이 아니라 '맞지 않음'."""
+        db = sqlite3.connect(wellcar.DB_PATH)
+        saved = db.execute("SELECT * FROM users").fetchall()
+        cols = [d[0] for d in db.execute("SELECT * FROM users").description]
+        try:
+            db.execute("DELETE FROM users")
+            db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES ('setup_code', 'ABCD-EFGH')")
+            db.commit()
+            anon = wellcar.app.test_client()
+            r = self.post(anon, "/api/auth/setup", {"setup_code": "가나다라", "username": "owner",
+                                                    "password": "owner-pass-1"})
+            self.assertEqual(r.status_code, 403)
+        finally:
+            db.execute("DELETE FROM users")
+            db.executemany(f"INSERT INTO users ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})", saved)
+            db.execute("DELETE FROM settings WHERE key='setup_code'")
+            db.commit()
+            db.close()
+            wellcar._failures.clear()
+
+
 class ImportExportTest(Base):
     def rows(self):
         inc = [{"trx_date": "2026-01-02", "income_type": "서비스제공", "category": "데크수리",
@@ -276,6 +320,18 @@ class ImportExportTest(Base):
         months = self.c.get("/api/stats/months?from=2026-01-01&to=2026-01-31").get_json()
         self.assertEqual(months[0]["income_count"], 3)
         self.assertEqual(months[0]["income"], 750000 * 2 + 381000)
+
+    def test_old_rows_without_payable_note_are_duplicates(self):
+        """이전 버전이 적요에 '[미지급금 …]' 없이 가져온 행도 같은 거래로 본다."""
+        db = sqlite3.connect(wellcar.DB_PATH)
+        db.execute("INSERT INTO incomes(trx_date, income_type, category, client, amount, vat, net_amount, memo) "
+                   "VALUES ('2026-02-01','서비스제공','데크수리','A',500000,0,500000,'작업')")
+        db.commit()
+        db.close()
+        row = {"trx_date": "2026-02-01", "income_type": "서비스제공", "category": "데크수리", "client": "A",
+               "amount": 500000, "vat": 0, "net_amount": 500000, "memo": "작업 [미지급금 50,000원]"}
+        r = self.post(self.c, "/api/import-json", {"incomes": [row], "expenses": []}).get_json()
+        self.assertEqual((r["incomes_added"], r["incomes_skipped"]), (0, 1))
 
     def test_import_makes_pre_import_backup(self):
         self.income()
@@ -337,6 +393,16 @@ class BackupTest(Base):
                           data={"file": (io.BytesIO(b"not a db"), "x.db")},
                           content_type="multipart/form-data")
         self.assertEqual(bad.status_code, 400)
+
+    def test_restore_oldest_pre_restore_backup(self):
+        """보관 개수가 꽉 찬 상태에서 가장 오래된 '복원 직전' 백업으로 복원해도 파일이 지워지지 않는다."""
+        self.income()
+        made = [backup.create_backup(wellcar.DB_PATH, wellcar.BACKUP_DIR, "pre-restore")
+                for _ in range(backup.KEEP["pre-restore"])]
+        oldest = [it for it in backup.list_backups(wellcar.BACKUP_DIR) if it["kind"] == "pre-restore"][-1]
+        self.assertIn(oldest["name"], [m["name"] for m in made])
+        r = self.post(self.c, f"/api/backups/{oldest['name']}/restore")
+        self.assertEqual(r.status_code, 200, r.get_json())
 
     def test_path_traversal_rejected(self):
         self.assertEqual(self.c.get("/api/backups/..%2Fapp.py/download").status_code, 404)

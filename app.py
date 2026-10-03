@@ -233,12 +233,15 @@ ROLES = {"viewer": 1, "staff": 2, "admin": 3}
 ROLE_LABELS = {"admin": "관리자", "staff": "직원", "viewer": "조회 전용"}
 USERNAME_RE = re.compile(r"^[A-Za-z0-9가-힣._-]{2,30}$")
 MIN_PASSWORD = 8
+MAX_PASSWORD = 128  # 아주 긴 입력으로 해시 계산을 오래 붙잡지 못하게
 SETUP_ALPHABET = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"  # 헷갈리는 0/O, 1/I 제외
 
 
 def _validate_password(password, username=""):
     if len(password) < MIN_PASSWORD:
         return f"비밀번호는 {MIN_PASSWORD}자 이상이어야 합니다."
+    if len(password) > MAX_PASSWORD:
+        return f"비밀번호는 {MAX_PASSWORD}자 이하여야 합니다."
     if username and password.lower() == username.lower():
         return "아이디와 같은 비밀번호는 쓸 수 없습니다."
     return None
@@ -312,6 +315,12 @@ def _load_secret_key():
             f.write(key)
         return key
     raise RuntimeError(f"세션 키 파일을 만들 수 없습니다: {path}")
+
+
+def json_body():
+    """요청 JSON 본문 (객체가 아니면 빈 dict)."""
+    body = request.get_json(silent=True)
+    return body if isinstance(body, dict) else {}
 
 
 def user_label(user):
@@ -444,9 +453,9 @@ _DUMMY_HASH = generate_password_hash(secrets.token_hex(8))
 
 @app.route("/api/auth/login", methods=["POST"])
 def login():
-    body = request.get_json(silent=True) or {}
-    username = str(body.get("username") or "").strip()
-    password = str(body.get("password") or "")
+    body = json_body()
+    username = str(body.get("username") or "").strip()[:60]
+    password = str(body.get("password") or "")[:MAX_PASSWORD + 1]
     key_ip = f"login:{request.remote_addr}:{username.lower()}"
     key_user = f"login-user:{username.lower()}"
     if _recent_failures(key_ip) >= 5 or _recent_failures(key_user) >= 20:
@@ -469,7 +478,7 @@ def login():
 
 @app.route("/api/auth/setup", methods=["POST"])
 def setup_first_admin():
-    body = request.get_json(silent=True) or {}
+    body = json_body()
     key = f"setup:{request.remote_addr}"
     if _recent_failures(key) >= 5 or _recent_failures("setup") >= 30:
         return jsonify({"error": "설정 코드 입력 실패가 반복되었습니다. 10분 뒤에 다시 시도하세요."}), 429
@@ -480,7 +489,7 @@ def setup_first_admin():
             return jsonify({"error": "이미 관리자 계정이 있습니다. 로그인하세요."}), 409
         expected = (get_setting(db, "setup_code") or "").replace("-", "")
         given = re.sub(r"[\s-]", "", str(body.get("setup_code") or "")).upper()
-        if not expected or not hmac.compare_digest(given, expected):
+        if not expected or not hmac.compare_digest(given.encode("utf-8"), expected.encode("utf-8")):
             _record_failure(key, "setup")
             return jsonify({"error": "설정 코드가 맞지 않습니다. 서버 창(로그)에 표시된 코드를 확인하세요."}), 403
         username = str(body.get("username") or "").strip()
@@ -510,8 +519,8 @@ def logout():
 @app.route("/api/auth/password", methods=["POST"])
 def change_password():
     user = current_user()
-    body = request.get_json(silent=True) or {}
-    current = str(body.get("current_password") or "")
+    body = json_body()
+    current = str(body.get("current_password") or "")[:MAX_PASSWORD + 1]
     new = str(body.get("new_password") or "")
     key = f"password:{user['id']}"
     if _recent_failures(key) >= 5:
@@ -543,12 +552,12 @@ def list_users():
 @app.route("/api/users", methods=["POST"])
 @role_required("admin")
 def create_user():
-    body = request.get_json(silent=True) or {}
+    body = json_body()
     username = str(body.get("username") or "").strip()
     password = str(body.get("password") or "")
     role = body.get("role") or "staff"
     display_name = str(body.get("display_name") or "").strip()[:30]
-    if role not in ROLES:
+    if not isinstance(role, str) or role not in ROLES:
         return jsonify({"error": "권한 값이 올바르지 않습니다."}), 400
     err = _validate_username(username) or _validate_password(password, username)
     if err:
@@ -568,10 +577,10 @@ def _other_active_admins(db, uid):
                       (uid,)).fetchone()[0]
 
 
-@app.route("/api/users/<int:uid>", methods=["PUT"])
+@app.route("/api/users/<int(max=9223372036854775807):uid>", methods=["PUT"])
 @role_required("admin")
 def update_user(uid):
-    body = request.get_json(silent=True) or {}
+    body = json_body()
     db = get_db()
     row = db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()
     if not row:
@@ -582,9 +591,11 @@ def update_user(uid):
         sets.append("display_name=?")
         args.append(str(body.get("display_name") or "").strip()[:30])
     role = body.get("role", row["role"])
-    active = bool(body.get("active", bool(row["active"])))
-    if role not in ROLES:
+    active = body.get("active", bool(row["active"]))
+    if not isinstance(role, str) or role not in ROLES:
         return jsonify({"error": "권한 값이 올바르지 않습니다."}), 400
+    if not isinstance(active, bool):
+        return jsonify({"error": "사용 여부 값이 올바르지 않습니다."}), 400
     if uid == me["id"] and (role != row["role"] or not active):
         return jsonify({"error": "본인 계정의 권한과 사용 여부는 바꿀 수 없습니다."}), 400
     if row["role"] == "admin" and row["active"] and (role != "admin" or not active) \
@@ -605,7 +616,7 @@ def update_user(uid):
     return jsonify(user_public(db.execute("SELECT * FROM users WHERE id=?", (uid,)).fetchone()))
 
 
-@app.route("/api/users/<int:uid>", methods=["DELETE"])
+@app.route("/api/users/<int(max=9223372036854775807):uid>", methods=["DELETE"])
 @role_required("admin")
 def delete_user(uid):
     db = get_db()
@@ -662,6 +673,14 @@ SEARCH_FIELDS = {
     "incomes": ("client", "memo", "product_model", "category", "manufacturer", "income_type", "account"),
     "expenses": ("client", "memo", "item", "expense_type"),
 }
+MAX_NUMBER = 10 ** 13  # 10조 원: SQLite 정수 범위 안에서 넉넉한 상한
+
+
+def round_half_up(v):
+    """화면(JS Math.round)과 같은 반올림. 파이썬 round()는 .5를 짝수로 보내 결과가 달라질 수 있다."""
+    return int(math.floor(float(v) + 0.5))
+
+
 FIELD_LABELS = {"trx_date": "영업일자", "income_type": "매출유형", "expense_type": "지출유형",
                 "amount": "금액"}
 TABLE_SPEC = {
@@ -702,7 +721,9 @@ def _clean_entry(raw, fields, required, table, clamp_balance=False):
                 return None, f"'{f}' 값이 숫자가 아닙니다."
             if not math.isfinite(v):
                 return None, f"'{f}' 값이 숫자가 아닙니다."
-            data[f] = round(v) if f in INTEGER_FIELDS else v
+            if abs(v) > MAX_NUMBER:
+                return None, f"'{f}' 값이 너무 큽니다."
+            data[f] = round_half_up(v) if f in INTEGER_FIELDS else v
     for f in required:
         if f in NUMERIC_FIELDS and not data.get(f):
             return None, f"{FIELD_LABELS.get(f, f)} 값이 필요합니다."
@@ -793,7 +814,7 @@ def _get_entry(table, rid):
 
 def _save_entry(table, rid=None):
     fields, required = TABLE_SPEC[table]
-    data, err = _clean_entry(request.get_json(silent=True) or {}, fields, required, table)
+    data, err = _clean_entry(json_body(), fields, required, table)
     if err:
         return jsonify({"error": err}), 400
     db = get_db()
@@ -843,13 +864,13 @@ def _register_entry_routes(table):
     base = f"/api/{table}"
     app.add_url_rule(base, f"list_{table}", lambda: _list_entries(table), methods=["GET"])
     app.add_url_rule(base, f"create_{table}", lambda: _save_entry(table), methods=["POST"])
-    app.add_url_rule(f"{base}/<int:rid>", f"get_{table}", lambda rid: _get_entry(table, rid),
+    app.add_url_rule(f"{base}/<int(max=9223372036854775807):rid>", f"get_{table}", lambda rid: _get_entry(table, rid),
                      methods=["GET"])
-    app.add_url_rule(f"{base}/<int:rid>", f"update_{table}", lambda rid: _save_entry(table, rid),
+    app.add_url_rule(f"{base}/<int(max=9223372036854775807):rid>", f"update_{table}", lambda rid: _save_entry(table, rid),
                      methods=["PUT"])
-    app.add_url_rule(f"{base}/<int:rid>", f"delete_{table}", lambda rid: _delete_entry(table, rid),
+    app.add_url_rule(f"{base}/<int(max=9223372036854775807):rid>", f"delete_{table}", lambda rid: _delete_entry(table, rid),
                      methods=["DELETE"])
-    app.add_url_rule(f"{base}/<int:rid>/settle", f"settle_{table}",
+    app.add_url_rule(f"{base}/<int(max=9223372036854775807):rid>/settle", f"settle_{table}",
                      lambda rid: _settle_entry(table, rid), methods=["POST"])
 
 
@@ -892,10 +913,10 @@ def list_codes():
 @app.route("/api/codes", methods=["POST"])
 @role_required("admin")
 def create_code():
-    body = request.get_json(silent=True) or {}
-    group = (body.get("code_group") or "").strip()
-    value = (body.get("code_value") or "").strip()[:100]
-    parent = (body.get("parent_value") or "").strip()
+    body = json_body()
+    group = str(body.get("code_group") or "").strip()
+    value = str(body.get("code_value") or "").strip()[:100]
+    parent = str(body.get("parent_value") or "").strip()
     if not group or not value:
         return jsonify({"error": "코드그룹과 코드값이 필요합니다."}), 400
     db = get_db()
@@ -913,7 +934,7 @@ def create_code():
                     "parent_value": parent}), 201
 
 
-@app.route("/api/codes/<int:rid>", methods=["DELETE"])
+@app.route("/api/codes/<int(max=9223372036854775807):rid>", methods=["DELETE"])
 @role_required("admin")
 def delete_code(rid):
     db = get_db()
@@ -992,6 +1013,10 @@ def _range_stats(db, d_from, d_to, group_expr, group_label):
     }
 
 
+def _year_ok(year):
+    return 1900 <= year <= 2999
+
+
 def month_range(year, month):
     first = date(year, month, 1)
     last = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(days=1)
@@ -1033,7 +1058,7 @@ def stats_monthly():
     try:
         year = int(request.args.get("year", ""))
         month = int(request.args.get("month", ""))
-        assert 1 <= month <= 12
+        assert 1 <= month <= 12 and _year_ok(year)
     except (ValueError, AssertionError):
         return jsonify({"error": "year, month 파라미터가 필요합니다."}), 400
     db = get_db()
@@ -1051,7 +1076,7 @@ def stats_quarterly():
     try:
         year = int(request.args.get("year", ""))
         quarter = int(request.args.get("quarter", ""))
-        assert 1 <= quarter <= 4
+        assert 1 <= quarter <= 4 and _year_ok(year)
     except (ValueError, AssertionError):
         return jsonify({"error": "year, quarter 파라미터가 필요합니다."}), 400
     db = get_db()
@@ -1075,7 +1100,8 @@ def stats_quarterly():
 def stats_yearly():
     try:
         year = int(request.args.get("year", ""))
-    except ValueError:
+        assert _year_ok(year)
+    except (ValueError, AssertionError):
         return jsonify({"error": "year 파라미터가 필요합니다."}), 400
     db = get_db()
     stats = _range_stats(db, f"{year}-01-01", f"{year}-12-31", "substr(trx_date,1,7)", "month")
@@ -1219,7 +1245,7 @@ def restore_backup(name):
         return jsonify({"error": "백업 파일이 없습니다."}), 404
     try:
         backup.inspect_backup(path)
-        safety = backup.create_backup(DB_PATH, BACKUP_DIR, "pre-restore")
+        safety = backup.create_backup(DB_PATH, BACKUP_DIR, "pre-restore", protect={name})
         counts = backup.restore_data(DB_PATH, path)
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
@@ -1267,9 +1293,19 @@ IMPORT_DEFAULTS = {
 }
 
 
+_PAYABLE_NOTE_RE = re.compile(r"\s*\[미지급금 [^\]]*\]$")
+
+
 def _dedupe_key(row, key_fields):
-    return tuple(int(float(row[f] or 0)) if f in ("amount", "vat") else str(row[f] or "")
-                 for f in key_fields)
+    """같은 거래인지 판정하는 키. 금액은 화면과 같은 반올림으로, 적요는 가져오기가 덧붙이는
+    '[미지급금 …]' 표기를 빼고 비교해 이전 버전으로 가져온 내역과도 중복으로 잡히게 한다."""
+    def part(f):
+        v = row[f]
+        if f in ("amount", "vat"):
+            return round_half_up(v or 0)
+        v = str(v or "")
+        return _PAYABLE_NOTE_RE.sub("", v) if f == "memo" else v
+    return tuple(part(f) for f in key_fields)
 
 
 def _plan_import(db, table, rows, results, invalid_samples):
@@ -1357,7 +1393,7 @@ def _auto_add_codes(db, incomes, expenses, results):
 @app.route("/api/import-json", methods=["POST"])
 @role_required("admin")
 def import_json():
-    body = request.get_json(silent=True) or {}
+    body = json_body()
     incomes = body.get("incomes") or []
     expenses = body.get("expenses") or []
     if not isinstance(incomes, list) or not isinstance(expenses, list):

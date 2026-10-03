@@ -32,20 +32,20 @@ def _parse_name(name):
     if not m:
         return None
     ts = datetime.strptime(m.group(1) + m.group(2), "%Y%m%d%H%M%S")
-    return ts, m.group(4)
+    return ts, m.group(4), int(m.group(3) or 1)  # 같은 초에 여러 개면 -2-, -3- … 순번
 
 
 def _item(backup_dir, name):
     parsed = _parse_name(name)
     if not parsed:
         return None
-    ts, kind = parsed
+    ts, kind, seq = parsed
     try:
         size = os.path.getsize(os.path.join(backup_dir, name))
     except OSError:
         return None
     return {"name": name, "kind": kind, "kind_label": KIND_LABELS[kind],
-            "created_at": ts.strftime("%Y-%m-%d %H:%M:%S"), "size": size}
+            "created_at": ts.strftime("%Y-%m-%d %H:%M:%S"), "seq": seq, "size": size}
 
 
 def list_backups(backup_dir):
@@ -53,7 +53,8 @@ def list_backups(backup_dir):
     if not os.path.isdir(backup_dir):
         return []
     items = [it for it in (_item(backup_dir, n) for n in os.listdir(backup_dir)) if it]
-    items.sort(key=lambda it: (it["created_at"], it["name"]), reverse=True)
+    # 이름 문자열 순서로는 '-10-'이 '-2-'보다 앞서므로 시각과 순번으로 정렬한다
+    items.sort(key=lambda it: (it["created_at"], it["seq"]), reverse=True)
     return items
 
 
@@ -66,17 +67,19 @@ def backup_path(backup_dir, name):
 
 
 def _new_name(backup_dir, kind):
-    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
-    name = f"wellcar-{stamp}-{kind}.db"
-    n = 1
-    while os.path.exists(os.path.join(backup_dir, name)):
-        n += 1
-        name = f"wellcar-{stamp}-{n}-{kind}.db"
-    return name
+    """같은 초에 여러 개를 만들면 순번을 붙인다. 정리로 지워진 번호를 다시 쓰지 않고
+    그 초의 가장 큰 순번 + 1을 써서, 이름의 (시각, 순번)이 항상 만든 순서와 같게 한다."""
+    now = datetime.now()
+    stamp = now.strftime("%Y%m%d-%H%M%S")
+    second = now.replace(microsecond=0)
+    seqs = [p[2] for p in (_parse_name(n) for n in os.listdir(backup_dir)) if p and p[0] == second]
+    n = max(seqs, default=0) + 1
+    return f"wellcar-{stamp}-{kind}.db" if n == 1 else f"wellcar-{stamp}-{n}-{kind}.db"
 
 
-def create_backup(db_path, backup_dir, kind="manual"):
-    """현재 DB를 일관된 상태로 복사한다(쓰기 중이어도 안전한 온라인 백업)."""
+def create_backup(db_path, backup_dir, kind="manual", protect=()):
+    """현재 DB를 일관된 상태로 복사한다(쓰기 중이어도 안전한 온라인 백업).
+    protect: 보관 개수 정리에서 지우면 안 되는 백업 이름(예: 지금 복원하려는 파일)."""
     os.makedirs(backup_dir, exist_ok=True)
     name = _new_name(backup_dir, kind)
     final = os.path.join(backup_dir, name)
@@ -91,16 +94,16 @@ def create_backup(db_path, backup_dir, kind="manual"):
     finally:
         src.close()
     os.replace(tmp, final)
-    prune(backup_dir)
+    prune(backup_dir, protect)
     return _item(backup_dir, name)
 
 
-def prune(backup_dir):
+def prune(backup_dir, protect=()):
     """종류별 보관 개수를 넘는 오래된 백업과 하루 지난 임시 파일을 지운다."""
     seen = {}
     for it in list_backups(backup_dir):
         seen[it["kind"]] = seen.get(it["kind"], 0) + 1
-        if seen[it["kind"]] > KEEP[it["kind"]]:
+        if seen[it["kind"]] > KEEP[it["kind"]] and it["name"] not in protect:
             try:
                 os.remove(os.path.join(backup_dir, it["name"]))
             except OSError:
