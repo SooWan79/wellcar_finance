@@ -48,6 +48,13 @@ async function logout(page) {
   await page.waitForSelector("#loginForm:not([hidden])");
 }
 
+/** 화면 안 확인 대화상자에서 '확인' 누르기 */
+async function confirmOk(page) {
+  await page.waitForSelector("#confirmDialog[open]");
+  await page.click("#confirmOk");
+  await page.waitForTimeout(150);
+}
+
 async function tab(page, name) {
   await page.click(`#mainTabs [data-view="${name}"]`);
   await page.waitForTimeout(350);
@@ -59,7 +66,7 @@ async function tab(page, name) {
   const page = await ctx.newPage();
   page.on("console", m => { if (m.type() === "error") errors.push(m.text()); });
   page.on("pageerror", e => errors.push(String(e)));
-  page.on("dialog", d => d.accept());  // confirm() 창은 모두 '확인'
+  page.on("dialog", d => d.accept());  // 브라우저 기본 창이 뜨면 '확인' (앱은 화면 안 대화상자를 씀)
 
   try {
     // 1) 로그인 화면 → 잘못된 비밀번호 → 정상 로그인
@@ -138,6 +145,7 @@ async function tab(page, name) {
     const before = await page.textContent("#balRecCount");
     const row = page.locator("#balRecList tr", { hasText: "UI테스트상사" });
     await row.locator("[data-settle]").click();
+    await confirmOk(page);
     await page.waitForTimeout(600);
     const after = await page.textContent("#balRecCount");
     assert(before !== after, `완료 처리 후 건수 변경 (${before} → ${after})`);
@@ -163,6 +171,7 @@ async function tab(page, name) {
       body: JSON.stringify({ trx_date: "2026-01-01", income_type: "기타", amount: 12345, memo: "복원 시험" }) }));
     assert(await count() === n0 + 1, "복원 시험용 1건 추가");
     await page.locator("#backupList tbody tr", { hasText: "manual" }).first().locator("[data-bk-restore]").click();
+    await confirmOk(page);
     await page.waitForTimeout(1200);
     assert(await count() === n0, "복원 후 건수 원상복구");
     assert(await page.locator("#backupList tbody tr", { hasText: "pre-restore" }).count() >= 1, "복원 직전 백업");

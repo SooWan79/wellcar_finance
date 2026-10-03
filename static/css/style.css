@@ -136,7 +136,7 @@ button, input, select { font: inherit; color: inherit; }
 .topbar {
   background: var(--surface);
   border-bottom: 1px solid var(--hairline);
-  position: sticky; top: 0; z-index: 30;
+  position: sticky; top: env(safe-area-inset-top, 0px); z-index: 30;
 }
 .topbar-inner {
   max-width: var(--shell); margin: 0 auto;
@@ -671,3 +671,6 @@ table.data td label.check { font-weight: 600; color: var(--ink); }
 .dialog-form { padding: 22px 22px 18px; }
 .dialog-form h3 { font-size: var(--fs-lg); margin-bottom: 2px; }
 .dialog-form .form-hint { margin: 0; }
+.confirm-msg { margin: 0; white-space: pre-line; color: var(--ink-2); line-height: 1.6; }
+.btn.primary.danger { background: var(--bad); border-color: var(--bad); }
+.btn.primary.danger:hover { background: var(--bad); border-color: var(--bad); filter: brightness(.92); }

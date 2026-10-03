@@ -44,6 +44,7 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
     모바일 폭 가로 넘침까지 확인하고 JS 콘솔 오류가 0건이어야 합니다. `SHOT_DIR`을 주면 캡처를 남깁니다.
   - 가져오기를 고쳤다면: `tests/make_sample_workbook.py`로 시험 통합문서를 만들고 **빈 DB** 서버에서
     `tests/ui_import_check.js`(FILE, TRUTH 환경변수)로 정답과 대조합니다(`--mode both|monthly` 둘 다).
+  - 화면·API를 고쳤다면 데모도 다시 빌드하고 점검한 뒤 게시합니다(아래 '데모 아티팩트'의 갱신 순서).
   - Playwright는 전역 node 모듈(`npm root -g`)에 있습니다. `playwright install`은 실행하지 마세요.
   - `LANG=C.UTF-8`이 없으면 크로미움이 한글 내려받기 파일명을 'download'로 바꿉니다(컨테이너 C 로케일 탓,
     실제 사용자 브라우저와 무관).
@@ -71,6 +72,8 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
   추가하지 않습니다. 차트는 `charts.js`의 자체 SVG, 엑셀 파싱은 `xlsx_import.js`(`DecompressionStream`).
 - **데이터 값을 `innerHTML`에 넣을 때는 반드시 `esc()`**를 거칩니다(엑셀에서 온 값·거래처명 등).
   `<option>`은 `fillSelect()`, 목록에 없는 저장값은 `setSelectValue()`를 쓰세요.
+- 확인 창은 브라우저 `confirm()` 대신 `await askConfirm(메시지, {okText, danger, title})`(화면 안 대화상자)를,
+  파일 받기는 `download(url)`을 쓰세요. 데모 아티팩트에서는 `confirm()`이 곧바로 취소되고 직접 내려받기가 막히기 때문입니다.
 - 권한별 화면: `body.role-admin|role-staff|role-viewer` 클래스와 `.need-admin`/`.need-staff` 클래스로
   숨깁니다(서버가 최종 차단하므로 화면 숨김은 편의용).
 - 스타일은 `style.css`의 `:root` 디자인 토큰 기반입니다. 테마는 자동 → 라이트 → 다크 순서로 토글되고
@@ -126,18 +129,31 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 
 ## 데모 아티팩트
 
-- 「웰카오디오 매출/지출관리 시스템 (데모)」
-  https://claude.ai/code/artifact/3efef368-9509-49fa-a48f-7436a9bedb29
-- **2026-08-18 버전 그대로입니다.** 로그인·미수금·내보내기·백업 등 10-03 기능은 들어 있지 않습니다.
-- 데모는 Flask 서버 없이 동작하는 별도 HTML입니다. 목업 API가 데이터를 브라우저
-  localStorage에 저장하므로 기기·브라우저마다 데이터가 따로 저장됩니다.
-- **데모 빌드 소스(목업 API, 빌드 스크립트)는 저장소에 없습니다.** 옛 세션의 임시 폴더에만
-  있었고 그 컨테이너와 함께 사라졌습니다. 데모를 갱신하려면 다음 순서로 하세요.
-  1. 이 URL을 Artifact `read`로 읽어 현재 HTML을 받습니다.
-  2. 받은 HTML을 바탕으로 재구성합니다(새 API: 인증·페이지 응답 형식·receivables·export 등 반영 필요).
-  3. 재구성한 빌드 스크립트를 이번에는 저장소에 커밋합니다(예: `demo/`).
-  4. 같은 URL로 publish합니다. 새 URL을 만들면 사용자가 가진 링크가 끊기고, 게시할 때
-     사용자 승인을 요청받을 수 있습니다.
+- 「웰카오디오 매출/지출관리 시스템 (데모)」. 아래 두 주소는 같은 아티팩트입니다.
+  - https://claude.ai/artifact/8nBZjenXgYw7ndbvs5Gw7W (게시 도구가 돌려준 주소, 갱신할 때 이것을 `url`로)
+  - https://claude.ai/code/artifact/3efef368-9509-49fa-a48f-7436a9bedb29 (사용자가 처음 받은 주소)
+- **2026-10-03 버전**(Version 4)입니다. 비공개(사용자 본인만 열람)이며, 공유는 사용자가 페이지의 공유 메뉴에서 합니다.
+- 실제 화면 파일(`static/`)을 그대로 묶고, 서버 대신 `demo/mock_api.js`가 브라우저 안에서 `/api/*`를 처리합니다.
+  로그인·권한·미수금·내보내기·백업·가져오기까지 실제와 같이 동작합니다. 소스는 모두 `demo/`에 있습니다.
+  - `mock_api.js`: app.py의 API를 브라우저 안으로 옮긴 것(`window.fetch` 가로채기). 데이터는 localStorage
+    `wellcar_demo_v2`(백업 `wellcar_demo_v2_backups`, 로그인 `wellcar_demo_v2_session`)에 저장되므로
+    기기·브라우저마다 데이터가 따로 저장됩니다. 저장소를 쓸 수 없으면 메모리로 동작합니다.
+  - `xlsx_writer.js`: openpyxl 대신 쓰는 xlsx 작성기(압축 없는 ZIP). 데모 백업은 .db가 아니라 JSON 스냅숏입니다.
+  - `demo_shell.js`: 파일 저장 창, '처음 상태로 되돌리기'(두 번 눌러야 실행), 데모 계정 버튼.
+  - `build_demo.py`: `demo/dist/wellcar_demo.html`(게시용)과 `preview.html`(로컬 점검용) 생성. `dist/`는 git 제외.
+- 데모 계정: admin(관리자·사장), staff(직원·김직원), viewer(조회 전용·세무사). 비밀번호는 모두 `demo1234`입니다.
+  처음 데이터는 매출 694건·지출 533건(최근 1년, CNY 매출 1건 포함)입니다.
+- 아티팩트 화면에서는 `confirm()`이 곧바로 '취소'가 되고, 페이지가 직접 내려받기를 시작할 수 없습니다.
+  그래서 앱은 화면 안 확인 창(`askConfirm`)을 씁니다. 데모는 `downloads` 기능(`claude.use("downloads").save`)으로
+  저장 확인 창을 띄웁니다. 앱 쪽 연결점은 `window.WellcarHost.saveFile`입니다.
+- **API나 화면을 바꾸면 데모도 맞춰야 합니다.** `mock_api.js`는 app.py를 손으로 옮긴 것이라 자동으로 따라가지 않습니다.
+  갱신 순서는 다음과 같습니다.
+  1. `mock_api.js`를 고치고 `.venv/bin/python demo/build_demo.py`를 실행합니다.
+  2. `python3 -m http.server 8010 -d demo/dist`로 띄운 뒤 `tests/ui_demo_check.js`를 돌립니다.
+     이어서 `BASE_URL=http://localhost:8010/preview.html UI_PASS=demo1234`로 `tests/ui_smoke.js`도 돌립니다.
+  3. 다른 세션이라면 먼저 위 주소를 Artifact `read`로 읽습니다(읽지 않은 아티팩트에 게시하면 거절됨).
+  4. `demo/dist/wellcar_demo.html`을 위 `url`로 publish합니다. `capabilities`를 생략하면 저장된 `{downloads}`가
+     유지됩니다. 새 URL을 만들면 사용자가 가진 링크가 끊깁니다.
 
 ## 작업 이력 (사용자 요청 → 결과)
 
@@ -149,6 +165,7 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 | 2026-08-18 | af7dbdb | 수입등록→매출관리, 지출등록→지출관리, 시스템명 변경, UI/UX 개선 요청 → 구현. 이후 사용자 피드백 없음 |
 | 2026-10-03 | f67a3ac 외 | 최초 세션이 `main` 고정 문제로 열리지 않아 새 세션으로 이관, 이 문서 추가 |
 | 2026-10-03 | a7b4ad3, 85d9e0f | 고도화 후보 1~5 "다 해줘" → 로그인·권한·배포 준비(DEPLOY.md, waitress, Docker, 윈도 실행기), 엑셀 내보내기·자동 백업·복원, 이관 검증(시트 선택·경영분석 대조·사후 대조, 대용량 시험), 미수금·미지급금·통화 열 가져오기, 전체 내역 페이지 조회, 자동 테스트 |
+| 2026-10-03 | (데모 커밋) | "데모도 새버전으로 만들어줘" → 실제 화면 + 브라우저 안 목업 API로 데모를 다시 만들어 같은 주소에 게시(Version 4). 빌드 소스(`demo/`)·데모 점검 스크립트를 저장소에 추가. 아티팩트 화면에서 동작하지 않던 `confirm()`을 화면 안 확인 창으로 교체 |
 
 사용자가 거절했거나 "나중에 하자"고 미뤄 둔 항목은 없습니다.
 
@@ -168,6 +185,8 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
    데이터가 많은 연도 파일을 받아 `tests/ui_import_check.js`로 확인하세요.
 3. **매출집계 '미지급금' 열의 의미를 모릅니다.** 지금은 적요에 남깁니다. 사용자에게 확인 필요.
 4. **과거 CNY 거래의 통화·환율은 복원할 수 없습니다**(원본 집계 시트에 열이 없음). 필요하면 화면에서 고쳐야 합니다.
-5. **데모 아티팩트가 옛 버전이고 빌드 스크립트가 없습니다**(위 '데모 아티팩트' 참조).
+5. **데모의 파일 저장 확인 창은 실제 아티팩트 화면에서 눌러 보지 못했습니다.** 흉내 낸
+   `claude.use("downloads")`로만 확인했습니다(`tests/ui_demo_check.js` 마지막 단계). 사용자 화면에서
+   엑셀·백업 받기가 안 된다고 하면 `demo/demo_shell.js`부터 보세요.
 6. **SQLite 한 파일·서버 1대 전제입니다.** 서버를 여러 대로 늘리면 안 됩니다. 로그인 실패 횟수도 프로세스 메모리에 둡니다.
 7. 분할 입금 이력, 수정·삭제 이력(감사 로그), 비밀번호 찾기(메일)는 없습니다.

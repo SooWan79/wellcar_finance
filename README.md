@@ -69,6 +69,18 @@ WELLCAR_ADMIN_PASSWORD=비밀번호8자이상 python seed_demo.py   # 최근 1�
 python seed_demo.py --clear                                 # 모든 매출/지출 내역 삭제
 ```
 
+### 웹 데모 (서버 없이 열리는 체험판)
+
+`demo/`는 실제 화면 파일을 그대로 묶고, 서버 대신 브라우저 안의 목업 API(`demo/mock_api.js`)가 요청을 처리하는
+HTML 한 장을 만듭니다. 데이터는 그 브라우저에만 저장됩니다. 데모 계정은 admin·staff·viewer(비밀번호 `demo1234`)입니다.
+
+```bash
+python demo/build_demo.py                    # demo/dist/wellcar_demo.html(게시용), preview.html(로컬 점검용)
+python3 -m http.server 8010 -d demo/dist     # http://localhost:8010/preview.html
+```
+
+API나 화면을 바꾸면 `demo/mock_api.js`도 함께 고쳐야 합니다(자동으로 따라가지 않음).
+
 ## 구조
 
 | 파일 | 역할 |
@@ -83,6 +95,7 @@ python seed_demo.py --clear                                 # 모든 매출/지�
 | `static/js/xlsx_import.js` | 엑셀(.xlsx/.xlsm) 브라우저 파서 (ZIP+XML 직접 해석, 외부 라이브러리 없음) |
 | `static/css/style.css` | 디자인 토큰 기반 스타일 (라이트/다크 모드) |
 | `seed_demo.py` | 데모 데이터 생성/삭제 스크립트 |
+| `demo/` | 웹 데모 소스: 브라우저 안 목업 API(`mock_api.js`), xlsx 작성기, 데모 장치(`demo_shell.js`), 빌드 스크립트 |
 | `start_windows.bat` | 윈도 PC 실행기 (처음 실행 시 자동 설치) |
 | `Dockerfile` | 컨테이너 이미지 (데이터는 `/data` 볼륨) |
 | `DEPLOY.md` | 운영 배포 안내 |
@@ -101,6 +114,12 @@ LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js
 # 엑셀 가져오기 대용량 검증: 원본과 같은 구조의 시험 파일을 만들어 빈 DB 서버에 올려 본다
 .venv/bin/python tests/make_sample_workbook.py --out /tmp/sample.xlsm --sales 6000 --expenses 4000
 LANG=C.UTF-8 NODE_PATH=$(npm root -g) FILE=/tmp/sample.xlsm TRUTH=/tmp/sample.json node tests/ui_import_check.js
+
+# 웹 데모: 빌드해서 띄운 뒤 데모 전용 점검 + 같은 화면 테스트
+python demo/build_demo.py
+python3 -m http.server 8010 -d demo/dist &
+LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_demo_check.js
+BASE_URL=http://localhost:8010/preview.html UI_PASS=demo1234 LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js
 ```
 
 ## API 요약

@@ -57,7 +57,13 @@
     const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
     const plain = /filename="?([^";]+)"?/i.exec(cd);
     const name = star ? decodeURIComponent(star[1]) : (plain ? plain[1] : "download");
-    const blobUrl = URL.createObjectURL(await res.blob());
+    const blob = await res.blob();
+    // 페이지가 직접 내려받기를 시작할 수 없는 화면(데모 아티팩트)은 호스트의 저장 창을 쓴다
+    if (window.WellcarHost && typeof window.WellcarHost.saveFile === "function") {
+      await window.WellcarHost.saveFile(name, blob);
+      return name;
+    }
+    const blobUrl = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = blobUrl;
     a.download = name;
@@ -66,6 +72,23 @@
     a.remove();
     setTimeout(() => URL.revokeObjectURL(blobUrl), 30000);
     return name;
+  }
+
+  /**
+   * 화면 안 확인 대화상자. 확인을 누르면 true.
+   * 브라우저 기본 confirm()은 일부 화면(앱 안 미리보기 등)에서 곧바로 '취소'가 되어 쓰지 않는다.
+   */
+  function askConfirm(message, opts) {
+    opts = opts || {};
+    const dlg = $("confirmDialog");
+    $("confirmTitle").textContent = opts.title || "확인";
+    $("confirmMessage").textContent = message;
+    $("confirmOk").textContent = opts.okText || "확인";
+    $("confirmOk").classList.toggle("danger", !!opts.danger);
+    dlg.returnValue = "";
+    dlg.showModal();
+    return new Promise(resolve =>
+      dlg.addEventListener("close", () => resolve(dlg.returnValue === "ok"), { once: true }));
   }
 
   let toastTimer;
@@ -609,7 +632,7 @@
       } catch (err) { toast(err.message, true); }
     } else if (delBtn) {
       const [kind, id] = delBtn.dataset.del.split(":");
-      if (!confirm("이 내역을 삭제하시겠습니까?")) return;
+      if (!(await askConfirm("이 내역을 삭제할까요? 삭제하면 되돌릴 수 없습니다.", { okText: "삭제", danger: true }))) return;
       try {
         await del(`/api/${tableOf(kind)}/${id}`);
         toast("삭제되었습니다.");
@@ -618,7 +641,8 @@
     } else if (settleBtn) {
       const [kind, id] = settleBtn.dataset.settle.split(":");
       const what = kind === "income" ? "입금" : "지급";
-      if (!confirm(`${what}이 끝났습니까? 이 건의 ${kind === "income" ? "미수금" : "미지급금"}을 0원으로 정리합니다.`)) return;
+      if (!(await askConfirm(`${what}이 끝났습니까? 이 건의 ${kind === "income" ? "미수금" : "미지급금"}을 0원으로 정리합니다.`,
+        { title: `${what} 완료`, okText: `${what} 완료` }))) return;
       try {
         await post(`/api/${tableOf(kind)}/${id}/settle`);
         toast(`${what} 완료로 처리했습니다.`);
@@ -1022,7 +1046,7 @@
         toast("코드가 추가되었습니다.");
       } catch (err) { toast(err.message, true); }
     } else if (delBtn) {
-      if (!confirm("이 코드를 삭제하시겠습니까? (기존 등록 내역은 유지됩니다)")) return;
+      if (!(await askConfirm("이 코드를 삭제할까요? 이미 등록된 내역은 그대로 남습니다.", { okText: "삭제", danger: true }))) return;
       try {
         await del(`/api/codes/${delBtn.dataset.codeDel}`);
         await loadCodes();
@@ -1322,7 +1346,8 @@
   }
 
   async function restoreBackup(name, when) {
-    if (!confirm(`${when} 백업으로 되돌립니다.\n\n매출·지출 내역과 코드가 그 시점으로 바뀝니다(사용자 계정은 그대로).\n지금 데이터는 ‘복원 직전’ 백업으로 자동 보관됩니다.\n\n계속할까요?`)) return;
+    if (!(await askConfirm(`${when} 백업으로 되돌립니다.\n\n매출·지출 내역과 코드가 그 시점으로 바뀝니다(사용자 계정은 그대로).\n지금 데이터는 ‘복원 직전’ 백업으로 자동 보관됩니다.`,
+      { title: "백업 복원", okText: "복원" }))) return;
     try {
       const r = await post(`/api/backups/${encodeURIComponent(name)}/restore`);
       toast(`복원했습니다: 매출 ${fmt(r.restored.incomes || 0)}건, 지출 ${fmt(r.restored.expenses || 0)}건`);
@@ -1342,7 +1367,7 @@
         const row = rs.closest("tr");
         await restoreBackup(rs.dataset.bkRestore, `‘${row.cells[0].textContent}’`);
       } else if (rm) {
-        if (!confirm("이 백업 파일을 삭제할까요? 되돌릴 수 없습니다.")) return;
+        if (!(await askConfirm("이 백업 파일을 삭제할까요? 되돌릴 수 없습니다.", { okText: "삭제", danger: true }))) return;
         await del(`/api/backups/${encodeURIComponent(rm.dataset.bkDel)}`);
         toast("백업 파일을 삭제했습니다.");
         loadBackups();
@@ -1414,7 +1439,8 @@
     if (ed) openUserDialog(usersCache.find(u => u.id === +ed.dataset.userEdit));
     if (rm) {
       const u = usersCache.find(x => x.id === +rm.dataset.userDel);
-      if (!confirm(`‘${u.name}’ 계정을 삭제할까요?\n기록을 남기려면 삭제 대신 [수정]에서 사용 중지를 하세요.`)) return;
+      if (!(await askConfirm(`‘${u.name}’ 계정을 삭제할까요?\n기록을 남기려면 삭제 대신 [수정]에서 사용 중지를 하세요.`,
+        { okText: "삭제", danger: true }))) return;
       try { await del(`/api/users/${u.id}`); toast("삭제했습니다."); refreshers.users(); }
       catch (err) { toast(err.message, true); }
     }

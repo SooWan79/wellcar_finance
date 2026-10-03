@@ -5,3 +5,4 @@ wellcar.db
 wellcar.db-journal
 backups/
 .wellcar_secret_key
+demo/dist/
