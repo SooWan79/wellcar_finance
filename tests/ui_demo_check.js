@@ -6,8 +6,8 @@
      LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_demo_check.js
 
    데모에만 있는 동작을 봅니다: 데모 계정 버튼, 브라우저 저장(새로고침 뒤 유지), 화면 안 확인 창(취소·확인),
-   엑셀 저장(보통 내려받기 / 아티팩트 저장 창을 흉내 낸 경로), '처음 상태로'(두 번 눌러야 실행),
-   조회 전용 화면, 휴대폰 폭 다크 모드.
+   엑셀 저장(보통 내려받기 / 아티팩트 저장 창을 흉내 낸 경로, 입력 양식 포함), '처음 상태로'(두 번 눌러야 실행),
+   조회 전용 화면, 휴대폰 폭 다크 모드(경영리포트·분석·목표 탭 포함).
    일반 화면 흐름은 같은 페이지에 tests/ui_smoke.js를 돌려 확인합니다:
      BASE_URL=http://localhost:8010/preview.html UI_PASS=demo1234 LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js
 
@@ -50,12 +50,13 @@ async function incomeCount(page) {
   return parseInt((await page.textContent("#incCount")).replace(/[^0-9]/g, ""), 10);
 }
 
-/** 아티팩트 화면의 claude.use("downloads")를 흉내 낸다. 두 번째 저장은 보는 사람이 '취소'한 것으로 한다. */
+/** 아티팩트 화면의 claude.use("downloads")를 흉내 낸다. window.__decline이 참이면 보는 사람이 '취소'한 것으로 한다. */
 function fakeArtifactHost() {
   window.__saved = [];
+  window.__decline = false;
   const downloads = {
     async save({ filename, data }) {
-      if (window.__saved.length >= 1) throw { code: "declined", message: "declined" };
+      if (window.__decline) throw { code: "declined", message: "declined" };
       const head = new Uint8Array(await data.slice(0, 2).arrayBuffer());
       window.__saved.push({ filename, size: data.size, zip: head[0] === 0x50 && head[1] === 0x4b });
       return { status: "saved" };
@@ -129,7 +130,7 @@ function fakeArtifactHost() {
     await page.click("#themeToggle");  // 자동 → 라이트 → 다크
     assert(await page.evaluate(() => document.documentElement.dataset.theme) === "dark", "다크 모드");
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const t of ["dashboard", "income", "balances"]) {
+    for (const t of ["dashboard", "report", "analysis", "targets", "income", "balances", "data"]) {
       await tab(page, t);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert(overflow <= 1, `${t} 모바일 가로 넘침 ${overflow}px`);
@@ -150,9 +151,14 @@ function fakeArtifactHost() {
     await page2.waitForFunction(() => window.__saved.length === 1);
     const saved = await page2.evaluate(() => window.__saved[0]);
     assert(saved.filename.endsWith(".xlsx") && saved.zip && saved.size > 1000, "저장 창에 xlsx 전달");
+    await page2.click("#tplDownload");
+    await page2.waitForFunction(() => window.__saved.length === 2);
+    const tpl = await page2.evaluate(() => window.__saved[1]);
+    assert(tpl.filename.endsWith(".xlsx") && tpl.zip, "입력 양식도 저장 창으로 전달");
+    await page2.evaluate(() => { window.__decline = true; });
     await page2.click("#xpDownload");
     await page2.waitForFunction(() => document.getElementById("toast").textContent.includes("취소"));
-    step(`아티팩트 저장 창 경로: ${saved.filename} (${saved.size.toLocaleString()}바이트), 취소 안내 표시`);
+    step(`아티팩트 저장 창 경로: ${saved.filename} (${saved.size.toLocaleString()}바이트), 양식 ${tpl.filename}, 취소 안내 표시`);
     await ctx2.close();
   } catch (e) {
     errors.push("테스트 중단: " + e.message);

@@ -3,6 +3,7 @@
   "use strict";
 
   const $ = id => document.getElementById(id);
+  const M = window.WellcarMetrics;
   const fmt = v => Math.round(v || 0).toLocaleString("ko-KR");
   const fmtWon = v => "₩" + fmt(v);
   const pad2 = n => String(n).padStart(2, "0");
@@ -57,8 +58,11 @@
     const star = /filename\*=UTF-8''([^;]+)/i.exec(cd);
     const plain = /filename="?([^";]+)"?/i.exec(cd);
     const name = star ? decodeURIComponent(star[1]) : (plain ? plain[1] : "download");
-    const blob = await res.blob();
-    // 페이지가 직접 내려받기를 시작할 수 없는 화면(데모 아티팩트)은 호스트의 저장 창을 쓴다
+    return saveBlob(name, await res.blob());
+  }
+
+  /** 파일 저장. 페이지가 직접 내려받기를 시작할 수 없는 화면(데모 아티팩트)은 호스트의 저장 창을 쓴다 */
+  async function saveBlob(name, blob) {
     if (window.WellcarHost && typeof window.WellcarHost.saveFile === "function") {
       await window.WellcarHost.saveFile(name, blob);
       return name;
@@ -137,6 +141,14 @@
     if (active && refreshers[active]) refreshers[active]();
   });
   applyTheme(currentTheme());
+  // 차트는 그릴 때 상자 폭에 맞추므로, 창 폭이 크게 바뀌면(휴대폰 회전 등) 지금 화면을 다시 그린다
+  let lastWidth = window.innerWidth;
+  window.addEventListener("resize", debounce(() => {
+    if (Math.abs(window.innerWidth - lastWidth) < 80) return;
+    lastWidth = window.innerWidth;
+    const active = currentView();
+    if (appReady && active && refreshers[active]) refreshers[active]();
+  }, 300));
 
   // ---------------------------------------------------------------- 로그인 · 처음 설정
   const ROLE_RANK = { viewer: 1, staff: 2, admin: 3 };
@@ -252,7 +264,7 @@
     b.addEventListener("click", () => b.closest("dialog").close()));
 
   // ---------------------------------------------------------------- tabs
-  const views = ["dashboard", "income", "expense", "balances", "monthly", "quarterly", "yearly",
+  const views = ["dashboard", "income", "expense", "balances", "report", "analysis", "targets",
     "data", "codes", "users"];
   const ADMIN_VIEWS = new Set(["codes", "users"]);
   const refreshers = {};
@@ -334,9 +346,18 @@
     fillSelect($("expCurrency"), codeValues("currency"), true);
     fillSelect($("expPayment"), codeValues("payment_type"), true);
     $("clientList").innerHTML = codeValues("client").map(v => `<option value="${esc(v)}">`).join("");
+    refreshCarModels();
     const inc = codeValues("income_type"), exp = codeValues("expense_type");
     fillSelect($("incTypeFilter"), ["", ...inc], true, ["모든 매출유형", ...inc]);
     fillSelect($("expTypeFilter"), ["", ...exp], true, ["모든 지출유형", ...exp]);
+  }
+
+  /** 차종 제안 목록: 고른 브랜드의 차종 (브랜드가 없거나 N/A면 전체) */
+  function refreshCarModels() {
+    const brand = $("incManufacturer").value;
+    const list = brand && brand !== "N/A" && codeValues("car_model", brand).length
+      ? codeValues("car_model", brand) : [...new Set(codeValues("car_model"))];
+    $("carModelList").innerHTML = list.map(v => `<option value="${esc(v)}">`).join("");
   }
 
   // ---------------------------------------------------------------- 매출 폼
@@ -352,6 +373,15 @@
     const amount = +$("incAmount").value || 0;
     $("incVat").value = vatFor(amount);
     $("incNet").value = amount - (+$("incVat").value || 0);
+    showSalesLine();
+  }
+  /** 실매출 = 매출액 − 미지급금(거래처에 줄 돈) 안내 */
+  function showSalesLine() {
+    const amount = +$("incAmount").value || 0, payout = +$("incPayout").value || 0;
+    $("incPayoutPaid").closest("label").hidden = payout <= 0;
+    $("incSalesLine").innerHTML = payout > 0
+      ? `실매출 <b>${fmtWon(amount - payout)}</b> = 매출액 ${fmtWon(amount)} − 미지급금 ${fmtWon(payout)}`
+      : "";
   }
   ["incQty", "incUnitPrice", "incRate", "incCurrency", "incPayment", "incTaxInvoice"]
     .forEach(id => $(id).addEventListener("input", calcIncome));
@@ -359,7 +389,10 @@
     const amount = +$("incAmount").value || 0;
     $("incVat").value = vatFor(amount);
     $("incNet").value = amount - (+$("incVat").value || 0);
+    showSalesLine();
   });
+  $("incPayout").addEventListener("input", showSalesLine);
+  $("incManufacturer").addEventListener("change", refreshCarModels);
   $("incVat").addEventListener("input", () => {
     $("incNet").value = (+$("incAmount").value || 0) - (+$("incVat").value || 0);
   });
@@ -384,6 +417,7 @@
     $("incDate").value = dateVal || todayStr();
     $("incWeekday").value = weekdayOf($("incDate").value);
     $("incRate").value = 1; $("incQty").value = 1; $("incUnitPrice").value = 0; $("incReceivable").value = 0;
+    $("incPayout").value = 0; $("incPayoutPaid").checked = false;
     refreshFormSelects();
     fillSelect($("incCategory"), codeValues("income_category", $("incType").value));
     $("incomeFormTitle").textContent = "매출 등록";
@@ -400,6 +434,7 @@
       income_type: $("incType").value,
       category: $("incCategory").value,
       manufacturer: $("incManufacturer").value,
+      car_model: $("incCarModel").value.trim(),
       product_model: $("incModel").value.trim(),
       client: $("incClient").value.trim(),
       currency: $("incCurrency").value,
@@ -414,10 +449,15 @@
       tax_invoice: $("incTaxInvoice").value,
       memo: $("incMemo").value.trim(),
       receivable: +$("incReceivable").value || 0,
+      payout: +$("incPayout").value || 0,
     };
+    data.payout_due = $("incPayoutPaid").checked ? 0 : data.payout;
     if (!data.amount) { toast("매출액을 입력하세요.", true); return; }
     if (data.receivable < 0 || data.receivable > Math.max(data.amount, 0)) {
       toast("미수금은 0원부터 매출액까지 입력할 수 있습니다.", true); return;
+    }
+    if (data.payout < 0 || data.payout > Math.max(data.amount, 0)) {
+      toast("미지급금은 0원부터 매출액까지 입력할 수 있습니다.", true); return;
     }
     try {
       const id = $("incId").value;
@@ -498,7 +538,7 @@
     const isInc = kind === "income";
     // 좁은 카드에서도 금액이 먼저 보이도록 일자 다음에 금액을 배치한다
     const head = isInc
-      ? "<th>일자</th><th class='num'>매출액</th><th>유형</th><th>구분</th><th>거래처</th><th class='num'>부가세</th><th class='num'>미수금</th><th>결제</th><th>적요</th><th></th>"
+      ? "<th>일자</th><th class='num'>매출액</th><th>유형</th><th>구분</th><th>차량</th><th>거래처</th><th class='num'>부가세</th><th class='num'>미수금</th><th class='num' title='거래처에 줄 돈(매출차감)'>미지급금</th><th>결제</th><th>적요</th><th></th>"
       : "<th>일자</th><th class='num'>지출금액</th><th>유형</th><th>품목</th><th>거래처</th><th class='num'>미지급</th><th>결제</th><th>적요</th><th></th>";
     const body = rows.map(r => {
       const date = `<td class="date">${esc(r.trx_date.slice(2))} <span class="wd">${esc(r.weekday)}</span></td>`;
@@ -511,9 +551,12 @@
           <button class="icon-btn" data-edit="${kind}:${r.id}">수정</button>
           <button class="icon-btn del" data-del="${kind}:${r.id}">삭제</button></span></td>`;
       if (isInc) {
+        const car = [r.manufacturer && r.manufacturer !== "N/A" ? r.manufacturer : "", r.car_model].filter(Boolean).join(" ");
+        const po = r.payout > 0
+          ? `<span class="${r.payout_due > 0 ? "due" : "muted"}" title="${r.payout_due > 0 ? `미지급 ${fmt(r.payout_due)}원` : "지급 완료"}">${fmt(r.payout)}</span>` : "";
         return `<tr>${date}${amount}<td><span class="tag">${esc(r.income_type)}</span></td>` +
-          `<td>${esc(r.category)}</td><td>${esc(r.client)}</td>` +
-          `<td class="num">${fmt(r.vat)}</td>${balCell}<td>${esc(r.payment_type)}</td>${memo}${actions}</tr>`;
+          `<td>${esc(r.category)}</td><td>${esc(car)}</td><td>${esc(r.client)}</td>` +
+          `<td class="num">${fmt(r.vat)}</td>${balCell}<td class="num">${po}</td><td>${esc(r.payment_type)}</td>${memo}${actions}</tr>`;
       }
       return `<tr>${date}${amount}<td><span class="tag">${esc(r.expense_type)}</span></td>` +
         `<td>${esc(r.item)}</td><td>${esc(r.client)}</td>${balCell}` +
@@ -526,7 +569,9 @@
     if (isInc) {
       const vat = summary ? summary.sum.vat : rows.reduce((a, r) => a + r.vat, 0);
       const due = summary ? summary.sum.balance : rows.reduce((a, r) => a + (r.receivable || 0), 0);
-      tail = `<td colspan="3"></td><td class="num">${fmt(vat)}</td><td class="num">${due ? fmt(due) : ""}</td><td colspan="3"></td>`;
+      const po = summary ? summary.sum.payout : rows.reduce((a, r) => a + (r.payout || 0), 0);
+      tail = `<td colspan="4"></td><td class="num">${fmt(vat)}</td><td class="num">${due ? fmt(due) : ""}</td>` +
+        `<td class="num">${po ? fmt(po) : ""}</td><td colspan="3"></td>`;
     } else {
       const due = summary ? summary.sum.balance : rows.reduce((a, r) => a + (r.payable || 0), 0);
       tail = `<td colspan="3"></td><td class="num">${due ? fmt(due) : ""}</td><td colspan="3"></td>`;
@@ -640,12 +685,13 @@
       } catch (err) { toast(err.message, true); }
     } else if (settleBtn) {
       const [kind, id] = settleBtn.dataset.settle.split(":");
-      const what = kind === "income" ? "입금" : "지급";
-      if (!(await askConfirm(`${what}이 끝났습니까? 이 건의 ${kind === "income" ? "미수금" : "미지급금"}을 0원으로 정리합니다.`,
-        { title: `${what} 완료`, okText: `${what} 완료` }))) return;
+      const st = SETTLE[kind];
+      if (!(await askConfirm(`${st.what}이 끝났습니까? 이 건의 ${st.bal}을 0원으로 정리합니다.` +
+        (kind === "payout" ? "\n(매출에서 빠지는 미지급금 금액은 그대로입니다)" : ""),
+        { title: `${st.what} 완료`, okText: `${st.what} 완료` }))) return;
       try {
-        await post(`/api/${tableOf(kind)}/${id}/settle`);
-        toast(`${what} 완료로 처리했습니다.`);
+        await post(`/api/${st.table}/${id}/settle`, { field: st.field });
+        toast(`${st.what} 완료로 처리했습니다.`);
         refreshAfterChange();
       } catch (err) { toast(err.message, true); }
     }
@@ -661,6 +707,8 @@
     fillSelect($("incCategory"), codeValues("income_category", r.income_type));
     setSelectValue($("incCategory"), r.category || "");
     setSelectValue($("incManufacturer"), r.manufacturer || "N/A");
+    refreshCarModels();
+    $("incCarModel").value = r.car_model || "";
     $("incModel").value = r.product_model || "";
     $("incClient").value = r.client || "";
     setSelectValue($("incCurrency"), r.currency || "KRW");
@@ -675,6 +723,9 @@
     $("incTaxInvoice").value = r.tax_invoice === "Y" ? "Y" : "N";
     $("incMemo").value = r.memo || "";
     $("incReceivable").value = r.receivable || 0;
+    $("incPayout").value = r.payout || 0;
+    $("incPayoutPaid").checked = (r.payout || 0) > 0 && !(r.payout_due > 0);
+    showSalesLine();
     $("incomeFormTitle").textContent = `매출 수정 (#${r.id})`;
     $("incMeta").textContent = auditText(r);
     $("incSubmit").textContent = "수정 저장";
@@ -708,9 +759,11 @@
   // ---------------------------------------------------------------- 통계 카드
   const SERIES_COLOR = { income: "var(--series-income)", expense: "var(--series-expense)", profit: "var(--series-profit)" };
 
-  function deltaChip(value, label) {
+  /** 금액 증감 칩. upBad=true면 늘어난 게 나쁨(지출) — 색은 좋고 나쁨, 화살표는 방향 */
+  function deltaChip(value, label, upBad) {
     if (value === undefined || value === null) return "";
-    const cls = value > 0 ? "up" : value < 0 ? "down" : "flat";
+    const good = upBad ? value < 0 : value > 0;
+    const cls = value === 0 ? "flat" : good ? "up" : "down";
     const mark = value > 0 ? "▲" : value < 0 ? "▼" : "―";
     const text = value === 0 ? "변동 없음" : `${mark} ${fmtWon(Math.abs(value))}`;
     return `<span class="delta ${cls}">${text}</span> <span>${label}</span>`;
@@ -740,51 +793,75 @@
   const isStale = (key, n) => latestReq[key] !== n;
   const metricStrip = html => `<div class="metric-strip">${html}</div>`;
 
+  // ---------------------------------------------------------------- 집계·목표 (경영현황·대시보드 공통)
+  /** /api/agg 행 목록 */
+  const agg = (kind, from, to, group) =>
+    api(`/api/agg?kind=${kind}&from=${from}&to=${to}${group ? `&group=${group}` : ""}`).then(r => r.rows);
+  let targetsCache = null;
+  /** 월별 목표 {"YYYY-MM": {sales, profit, expense}} — 한 번 읽어 두고 저장하면 다시 읽는다 */
+  async function loadTargets() {
+    if (!targetsCache) targetsCache = api("/api/targets").then(r => r.targets).catch(e => { targetsCache = null; throw e; });
+    return targetsCache;
+  }
+  const invalidateTargets = () => { targetsCache = null; };
+  const pctText = v => (v === null || v === undefined || !isFinite(v) ? "–"
+    : `${v > 0 ? "▲" : v < 0 ? "▼" : ""}${Math.abs(Math.round(v * 10) / 10).toLocaleString("ko-KR")}%`);
+  const pctOf = (a, b) => (b ? `${Math.round(a / b * 100).toLocaleString("ko-KR")}%` : "–");
+
   // ---------------------------------------------------------------- 대시보드
   refreshers.dashboard = async function () {
     const d = $("dashDate").value || todayStr();
     $("dashDate").value = d;
     const req = nextReq("dashboard");
+    const monthP = M.periodOf("month", d);
+    const winFrom = M.addDays(d, -13);
+    const from = M.addYears(winFrom < monthP.start ? winFrom : monthP.start, -1);
     try {
-      const [stats, incRes, expRes] = await Promise.all([
-        api(`/api/stats/daily?date=${d}`),
+      const [inc, exp, T, bal, incRes, expRes] = await Promise.all([
+        agg("incomes", from, d, "date"),
+        agg("expenses", from, d, "date"),
+        loadTargets(),
+        api("/api/receivables?summary=1"),
         api(`/api/incomes?date=${d}&size=500`),
         api(`/api/expenses?date=${d}&size=500`),
       ]);
       if (isStale("dashboard", req)) return;
-      const day = stats.day.totals, prev = stats.prev_day.totals, mon = stats.month.totals;
-      const out = stats.outstanding;
-      const monthLabel = `${+d.slice(5, 7)}월 누계`;
-      $("dashSubtitle").textContent =
-        `${d} ${stats.weekday}요일 · 매출 ${day.income_count}건 · 지출 ${day.expense_count}건`;
+      const one = x => ({ from: x, to: x });
+      const day = M.metricsFor(inc, exp, one(d));
+      const prev = M.metricsFor(inc, exp, one(M.addDays(d, -1)));
+      const lyDay = M.metricsFor(inc, exp, one(M.addYears(d, -1)));
+      const mtd = M.metricsFor(inc, exp, { from: monthP.start, to: d });
+      const lyMtd = M.metricsFor(inc, exp, { from: M.addYears(monthP.start, -1), to: M.addYears(d, -1) });
+      const tMonth = M.targetFor(T, monthP.start, monthP.end), tPace = M.targetFor(T, monthP.start, d);
+      const mm = +d.slice(5, 7);
+      $("dashSubtitle").textContent = `${d} ${weekdayOf(d)} · 매출 ${day.cnt}건 · 지출 ${day.exp_cnt}건`;
+      const ly = v => ` <span class="muted">· 작년 같은 날 ${fmtWon(v)}</span>`;
       $("dashTiles").innerHTML =
         kpiRow(
-          kpi("당일 매출", fmtWon(day.income), "income", deltaChip(day.income - prev.income, "전일대비")) +
-          kpi("당일 지출", fmtWon(day.expense), "expense", deltaChip(day.expense - prev.expense, "전일대비")) +
-          kpi("당일 순익", fmtWon(day.profit), "profit", deltaChip(day.profit - prev.profit, "전일대비"))
+          kpi("당일 매출 (실매출)", fmtWon(day.sales), "income", deltaChip(day.sales - prev.sales, "전일대비") + ly(lyDay.sales)) +
+          kpi("당일 지출", fmtWon(day.expense), "expense", deltaChip(day.expense - prev.expense, "전일대비", true) + ly(lyDay.expense)) +
+          kpi("당일 영업이익", fmtWon(day.profit), "profit", deltaChip(day.profit - prev.profit, "전일대비") + ly(lyDay.profit))
         ) +
         metricStrip(
-          metric("당일 현금매출 (카드 외)", fmtWon(day.cash_income), `카드 ${fmtWon(day.card_income)}`) +
-          metric(`${monthLabel} 매출`, fmtWon(mon.income), `부가세 ${fmtWon(mon.vat)}`) +
-          metric(`${monthLabel} 지출`, fmtWon(mon.expense), `원가 ${fmtWon(mon.cost_expense)} · ${mon.cost_ratio}%`) +
-          metric(`${monthLabel} 순익`, fmtWon(mon.profit), `지출비중 ${mon.expense_ratio}%`) +
-          metric("당월 영업일수", `${mon.business_days}일`, `일평균 ${fmtWon(mon.avg_daily_income)}`) +
-          metric("미수금 잔액", fmtWon(out.receivable),
-            `${out.receivable_count}건 · 미지급 ${fmtWon(out.payable)}`,
+          metric(`${mm}월 누계 매출`, fmtWon(mtd.sales), tMonth.sales
+            ? `목표 대비 ${pctOf(mtd.sales, tMonth.sales)} · 진도 대비 ${pctOf(mtd.sales, tPace.sales)}`
+            : `전년 동기 대비 ${pctText(M.pctChange(mtd.sales, lyMtd.sales))}`,
+            ' role="button" tabindex="0" data-goto="report" title="경영현황으로 이동"') +
+          metric(`${mm}월 누계 영업이익`, fmtWon(mtd.profit),
+            `이익률 ${mtd.margin === null ? "–" : mtd.margin.toFixed(1) + "%"} · 전년 동기 ${pctText(M.pctChange(mtd.profit, lyMtd.profit))}`) +
+          metric(`${mm}월 누계 지출`, fmtWon(mtd.expense), tMonth.expense
+            ? `예산 집행 ${pctOf(mtd.expense, tMonth.expense)}` : `원가율 ${mtd.cost_ratio === null ? "–" : mtd.cost_ratio.toFixed(1) + "%"}`) +
+          metric("당일 현금매출 (카드 외)", fmtWon(day.cash), `카드 ${fmtWon(day.card)}`) +
+          metric("당월 영업일수", `${mtd.days}일`, `일평균 ${fmtWon(mtd.avg_daily || 0)}`) +
+          metric("미수금 잔액 (받을 돈)", fmtWon(bal.incomes.total),
+            `${fmt(bal.incomes.count)}건 · 미지급 ${fmtWon(bal.expenses.total + bal.payouts.total)}`,
             ' role="button" tabindex="0" data-goto="balances" title="미수·미지급 화면으로 이동"')
         );
 
       // 최근 14일 차트
-      const seriesMap = new Map(stats.recent_series.map(s => [s.key, s]));
-      const labels = [];
-      const start = new Date(stats.recent_from + "T00:00:00");
-      for (let i = 0; i < 14; i++) {
-        const dt = new Date(start); dt.setDate(start.getDate() + i);
-        labels.push(isoOf(dt));
-      }
-      drawIncomeExpenseChart($("dashChart"), labels,
-        labels.map(k => (seriesMap.get(k) || {}).income || 0),
-        labels.map(k => (seriesMap.get(k) || {}).expense || 0),
+      const labels = Array.from({ length: 14 }, (_, i) => M.addDays(winFrom, i));
+      const daily = labels.map(k => M.metricsFor(inc, exp, one(k)));
+      drawIncomeExpenseChart($("dashChart"), labels, daily.map(k => k.sales), daily.map(k => k.expense),
         k => k.slice(5).replace("-", "/"), 2);
 
       $("dashIncCount").textContent = `${incRes.total}건`;
@@ -793,18 +870,19 @@
       $("dashExpenseList").innerHTML = entryTable(expRes.items, "expense");
     } catch (err) { toast(err.message, true); }
   };
-  $("dashTiles").addEventListener("click", e => {
-    const g = e.target.closest("[data-goto]");
+  // 지표 칸을 누르면 관련 화면으로 (대시보드·경영현황)
+  document.addEventListener("click", e => {
+    const g = e.target.closest(".metric[data-goto]");
     if (g) showView(g.dataset.goto);
   });
-  $("dashTiles").addEventListener("keydown", e => {
-    const g = e.target.closest("[data-goto]");
+  document.addEventListener("keydown", e => {
+    const g = e.target.closest && e.target.closest(".metric[data-goto]");
     if (g && (e.key === "Enter" || e.key === " ")) { e.preventDefault(); showView(g.dataset.goto); }
   });
 
   function drawIncomeExpenseChart(elm, labels, incVals, expVals, xLabelFn, xTickEvery) {
     WCharts.groupedBars(elm, labels, [
-      { name: "매출", color: getCss("--series-income"), values: incVals },
+      { name: "매출 (실매출)", color: getCss("--series-income"), values: incVals },
       { name: "지출", color: getCss("--series-expense"), values: expVals },
     ], { xLabelFn, xTickEvery, titleFn: l => l });
   }
@@ -826,167 +904,130 @@
   $("dashAddExpense").addEventListener("click", () => { showView("expense"); resetExpenseForm($("dashDate").value); });
 
   // ---------------------------------------------------------------- 미수금·미지급금
-  function balanceTable(items, kind) {
-    if (!items.length) return `<p class="empty-msg">${kind === "income" ? "미수금" : "미지급금"}이 남은 내역이 없습니다.</p>`;
-    const isInc = kind === "income";
-    const rows = items.map(r => {
-      const bal = isInc ? r.receivable : r.payable;
+  // 완료 처리 대상: 매출 미수금(받을 돈), 지출 미지급금(외상), 매출의 거래처 미지급금(매출차감)
+  const SETTLE = {
+    income: { table: "incomes", field: "receivable", what: "입금", bal: "미수금" },
+    expense: { table: "expenses", field: "payable", what: "지급", bal: "미지급금" },
+    payout: { table: "incomes", field: "payout_due", what: "지급", bal: "거래처 미지급금" },
+  };
+
+  /** items: [{kind, r}] — side: rec(받을 돈) / pay(줄 돈) */
+  function balanceTable(items, side) {
+    if (!items.length) return `<p class="empty-msg">${side === "rec" ? "미수금" : "미지급금"}이 남은 내역이 없습니다.</p>`;
+    const rows = items.map(({ kind, r }) => {
+      const amount = kind === "payout" ? r.payout : r.amount;
+      const bal = kind === "income" ? r.receivable : kind === "payout" ? r.payout_due : r.payable;
       const age = daysSince(r.trx_date);
       const ageCls = age >= 60 ? "age old" : age >= 30 ? "age mid" : "age";
-      return `<tr><td class="date">${esc(r.trx_date.slice(2))} <span class="wd">${esc(r.weekday)}</span></td>` +
+      const tag = kind === "income" ? esc(r.income_type)
+        : kind === "payout" ? `매출차감 · ${esc(r.category || r.income_type)}` : `지출 · ${esc(r.expense_type)}`;
+      const editKind = kind === "expense" ? "expense" : "income";
+      return `<tr><td class="pick need-staff"><input type="checkbox" data-pick="${kind}:${r.id}" aria-label="선택"></td>` +
+        `<td class="date">${esc(r.trx_date.slice(2))} <span class="wd">${esc(r.weekday)}</span></td>` +
         `<td>${esc(r.client) || '<span class="muted">(미지정)</span>'}</td>` +
-        `<td><span class="tag">${esc(isInc ? r.income_type : r.expense_type)}</span></td>` +
-        `<td class="num">${fmt(r.amount)}</td><td class="num strong"><span class="due">${fmt(bal)}</span></td>` +
+        `<td><span class="tag${kind === "payout" ? " cur" : ""}">${tag}</span></td>` +
+        `<td class="num">${fmt(amount)}</td><td class="num strong"><span class="due">${fmt(bal)}</span></td>` +
         `<td class="num"><span class="${ageCls}">${age}일</span></td>` +
         `<td class="memo" title="${esc(r.memo)}">${esc(r.memo)}</td>` +
         `<td><span class="row-actions need-staff">` +
-        `<button class="icon-btn ok" data-settle="${kind}:${r.id}">${isInc ? "입금 완료" : "지급 완료"}</button>` +
-        `<button class="icon-btn" data-edit="${kind}:${r.id}">수정</button></span></td></tr>`;
+        `<button class="icon-btn ok" data-settle="${kind}:${r.id}">${SETTLE[kind].what} 완료</button>` +
+        `<button class="icon-btn" data-edit="${editKind}:${r.id}">수정</button></span></td></tr>`;
     }).join("");
-    const total = items.reduce((a, r) => a + (isInc ? r.receivable : r.payable), 0);
-    return `<table class="data has-actions"><thead><tr><th>일자</th><th>거래처</th><th>유형</th>` +
-      `<th class="num">${isInc ? "매출액" : "지출금액"}</th><th class="num">${isInc ? "미수금" : "미지급금"}</th>` +
+    const total = items.reduce((a, { kind, r }) =>
+      a + (kind === "income" ? r.receivable : kind === "payout" ? r.payout_due : r.payable), 0);
+    return `<table class="data has-actions"><thead><tr>` +
+      `<th class="pick need-staff"><input type="checkbox" data-pick-all="${side}" aria-label="모두 선택"></th>` +
+      `<th>일자</th><th>거래처</th><th>구분</th><th class="num">금액</th><th class="num">${side === "rec" ? "미수금" : "남은 금액"}</th>` +
       `<th class="num">경과</th><th>적요</th><th></th></tr></thead><tbody>${rows}` +
-      `<tr class="total-row"><td>합계 · ${fmt(items.length)}건</td><td colspan="3"></td>` +
+      `<tr class="total-row"><td class="need-staff"></td><td>합계 · ${fmt(items.length)}건</td><td colspan="3"></td>` +
       `<td class="num">${fmt(total)}</td><td colspan="3"></td></tr></tbody></table>`;
+  }
+
+  /** 거래처별 합계 두 목록 합치기 (지출 미지급 + 매출차감 미지급) */
+  function mergeByClient(...lists) {
+    const m = new Map();
+    for (const it of lists.flat()) {
+      const cur = m.get(it.name) || { name: it.name, value: 0, cnt: 0 };
+      cur.value += it.value;
+      cur.cnt += it.cnt;
+      m.set(it.name, cur);
+    }
+    return [...m.values()].sort((a, b) => b.value - a.value);
   }
 
   refreshers.balances = async function () {
     try {
       const r = await api("/api/receivables");
-      const inc = r.incomes, exp = r.expenses;
+      const inc = r.incomes, exp = r.expenses, po = r.payouts;
+      const payTotal = exp.total + po.total;
       $("balTiles").innerHTML = kpiRow(
         kpi("미수금 잔액 (받을 돈)", fmtWon(inc.total), "income", `${fmt(inc.count)}건 · 거래처 ${inc.by_client.length}곳`) +
-        kpi("미지급금 잔액 (줄 돈)", fmtWon(exp.total), "expense", `${fmt(exp.count)}건 · 거래처 ${exp.by_client.length}곳`) +
-        kpi("차액 (받을 돈 − 줄 돈)", fmtWon(inc.total - exp.total), "profit", "현금흐름 참고용")
+        kpi("미지급금 잔액 (줄 돈)", fmtWon(payTotal), "expense",
+          `지출 외상 ${fmtWon(exp.total)} · 매출차감 ${fmtWon(po.total)}`) +
+        kpi("차액 (받을 돈 − 줄 돈)", fmtWon(inc.total - payTotal), "profit", "현금흐름 참고용")
       );
       WCharts.hBars($("balRecClients"), inc.by_client, getCss("--series-income"));
-      WCharts.hBars($("balPayClients"), exp.by_client, getCss("--series-expense"));
+      WCharts.hBars($("balPayClients"), mergeByClient(exp.by_client, po.by_client), getCss("--series-expense"));
       $("balRecCount").textContent = `${fmt(inc.count)}건`;
-      $("balPayCount").textContent = `${fmt(exp.count)}건`;
-      $("balRecList").innerHTML = balanceTable(inc.items, "income") +
+      $("balPayCount").textContent = `${fmt(exp.count + po.count)}건`;
+      $("balRecList").innerHTML = balanceTable(inc.items.map(x => ({ kind: "income", r: x })), "rec") +
         (inc.count > inc.items.length ? `<p class="form-hint">오래된 ${fmt(inc.items.length)}건만 표시합니다. 나머지는 매출관리에서 ‘미수금 남은 건만’으로 찾으세요.</p>` : "");
-      $("balPayList").innerHTML = balanceTable(exp.items, "expense") +
-        (exp.count > exp.items.length ? `<p class="form-hint">오래된 ${fmt(exp.items.length)}건만 표시합니다.</p>` : "");
+      const payItems = [...exp.items.map(x => ({ kind: "expense", r: x })), ...po.items.map(x => ({ kind: "payout", r: x }))]
+        .sort((a, b) => (a.r.trx_date === b.r.trx_date ? a.r.id - b.r.id : a.r.trx_date < b.r.trx_date ? -1 : 1));
+      $("balPayList").innerHTML = balanceTable(payItems, "pay") +
+        (exp.count + po.count > payItems.length ? `<p class="form-hint">오래된 순으로 일부만 표시합니다.</p>` : "");
+      updateBulkButtons();
     } catch (err) { toast(err.message, true); }
   };
 
-  // ---------------------------------------------------------------- 공통 기간 뷰 렌더
-  function periodTiles(t, prevT, prevLabel) {
-    const foot = key => prevT ? deltaChip(t[key] - prevT[key], prevLabel) : "";
-    return kpiRow(
-      kpi("총 매출", fmtWon(t.income), "income", foot("income")) +
-      kpi("총 지출", fmtWon(t.expense), "expense", foot("expense")) +
-      kpi("영업이익", fmtWon(t.profit), "profit", foot("profit"))
-    ) + metricStrip(
-      metric("순매출액", fmtWon(t.net_income), `부가세 ${fmtWon(t.vat)}`) +
-      metric("현금매출 (카드 외)", fmtWon(t.cash_income), `카드 ${fmtWon(t.card_income)}`) +
-      metric("영업일수", `${t.business_days}일`, `일평균 ${fmtWon(t.avg_daily_income)}`) +
-      metric("지출비중", `${t.expense_ratio}%`, `원가비중 ${t.cost_ratio}%`) +
-      metric("등록 건수", `${fmt(t.income_count + t.expense_count)}건`,
-        `매출 ${t.income_count} · 지출 ${t.expense_count}`)
-    );
+  function picked(side) {
+    return [...document.querySelectorAll(`#${side === "rec" ? "balRecList" : "balPayList"} [data-pick]:checked`)]
+      .map(cb => cb.dataset.pick.split(":")).map(([kind, id]) => ({ kind, id: +id }));
   }
-
-  function seriesTable(series, keyLabel, keyFn) {
-    if (!series.length) return '<p class="empty-msg">데이터가 없습니다.</p>';
-    let tInc = 0, tExp = 0;
-    const rows = series.map(s => {
-      tInc += s.income; tExp += s.expense;
-      const profitCls = s.profit > 0 ? "pos" : s.profit < 0 ? "neg" : "";
-      return `<tr><td class="date">${keyFn ? keyFn(s.key) : s.key}</td>` +
-        `<td class="num">${fmt(s.income)}</td><td class="num">${fmt(s.expense)}</td>` +
-        `<td class="num strong ${profitCls}">${fmt(s.profit)}</td></tr>`;
-    }).join("");
-    const tp = tInc - tExp;
-    return `<table class="data"><thead><tr><th>${keyLabel}</th>` +
-      `<th class="num">매출</th><th class="num">지출</th><th class="num">손익</th></tr></thead>` +
-      `<tbody>${rows}<tr class="total-row"><td>합계</td><td class="num">${fmt(tInc)}</td>` +
-      `<td class="num">${fmt(tExp)}</td><td class="num ${tp >= 0 ? "pos" : "neg"}">${fmt(tp)}</td></tr></tbody></table>`;
+  function updateBulkButtons() {
+    const rec = picked("rec").length, pay = picked("pay").length;
+    $("balRecBulk").disabled = !rec;
+    $("balRecBulk").textContent = rec ? `선택한 ${rec}건 입금 완료` : "선택한 건 입금 완료";
+    $("balPayBulk").disabled = !pay;
+    $("balPayBulk").textContent = pay ? `선택한 ${pay}건 지급 완료` : "선택한 건 지급 완료";
   }
-
-  // ---------------------------------------------------------------- 월별
-  refreshers.monthly = async function () {
-    const y = +$("monYear").value, m = +$("monMonth").value;
-    const req = nextReq("monthly");
+  for (const id of ["balRecList", "balPayList"]) {
+    $(id).addEventListener("change", e => {
+      const all = e.target.closest("[data-pick-all]");
+      if (all) $(id).querySelectorAll("[data-pick]").forEach(cb => { cb.checked = all.checked; });
+      updateBulkButtons();
+    });
+  }
+  async function bulkSettle(side) {
+    const items = picked(side);
+    if (!items.length) return;
+    const what = side === "rec" ? "입금" : "지급";
+    if (!(await askConfirm(`선택한 ${items.length}건을 ${what} 완료로 정리합니다.`, { title: `${what} 완료`, okText: `${items.length}건 ${what} 완료` }))) return;
+    const groups = {};
+    for (const it of items) (groups[it.kind] = groups[it.kind] || []).push(it.id);
     try {
-      const stats = await api(`/api/stats/monthly?year=${y}&month=${m}`);
-      if (isStale("monthly", req)) return;
-      $("monTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전월대비");
-      // 해당 월 전체 일자 축
-      const daysInMonth = new Date(y, m, 0).getDate();
-      const map = new Map(stats.series.map(s => [s.key, s]));
-      const labels = [];
-      for (let d = 1; d <= daysInMonth; d++) labels.push(`${y}-${pad2(m)}-${pad2(d)}`);
-      drawIncomeExpenseChart($("monChart"), labels,
-        labels.map(k => (map.get(k) || {}).income || 0),
-        labels.map(k => (map.get(k) || {}).expense || 0),
-        k => +k.slice(8) + "일", 2);
-      WCharts.hBars($("monIncBreak"), stats.income_by_category, getCss("--series-income"));
-      WCharts.hBars($("monExpBreak"), stats.expense_by_type, getCss("--series-expense"));
-      $("monTable").innerHTML = seriesTable(stats.series, "영업일자",
-        k => `${k} (${weekdayOf(k).slice(0, 1)})`);
+      let n = 0;
+      for (const [kind, ids] of Object.entries(groups)) {
+        const st = SETTLE[kind];
+        n += (await post("/api/settle-bulk", { table: st.table, field: st.field, ids })).updated;
+      }
+      toast(`${fmt(n)}건을 ${what} 완료로 처리했습니다.`);
+      refreshers.balances();
     } catch (err) { toast(err.message, true); }
-  };
-  $("monYear").addEventListener("change", refreshers.monthly);
-  $("monMonth").addEventListener("change", refreshers.monthly);
-
-  // ---------------------------------------------------------------- 분기별
-  refreshers.quarterly = async function () {
-    const y = +$("qtrYear").value, q = +$("qtrQuarter").value;
-    const req = nextReq("quarterly");
-    try {
-      const stats = await api(`/api/stats/quarterly?year=${y}&quarter=${q}`);
-      if (isStale("quarterly", req)) return;
-      $("qtrTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전분기대비");
-      const map = new Map(stats.series.map(s => [s.key, s]));
-      const labels = [];
-      for (let i = 0; i < 3; i++) labels.push(`${y}-${pad2((q - 1) * 3 + 1 + i)}`);
-      drawIncomeExpenseChart($("qtrChart"), labels,
-        labels.map(k => (map.get(k) || {}).income || 0),
-        labels.map(k => (map.get(k) || {}).expense || 0),
-        k => +k.slice(5) + "월", 1);
-      WCharts.hBars($("qtrIncBreak"), stats.income_by_category, getCss("--series-income"));
-      WCharts.hBars($("qtrExpBreak"), stats.expense_by_type, getCss("--series-expense"));
-      $("qtrTable").innerHTML = seriesTable(
-        labels.map(k => map.get(k) || { key: k, income: 0, expense: 0, profit: 0 }),
-        "영업월", k => `${+k.slice(5)}월`);
-    } catch (err) { toast(err.message, true); }
-  };
-  $("qtrYear").addEventListener("change", refreshers.quarterly);
-  $("qtrQuarter").addEventListener("change", refreshers.quarterly);
-
-  // ---------------------------------------------------------------- 연도별
-  refreshers.yearly = async function () {
-    const y = +$("yrYear").value;
-    const req = nextReq("yearly");
-    try {
-      const stats = await api(`/api/stats/yearly?year=${y}`);
-      if (isStale("yearly", req)) return;
-      $("yrTiles").innerHTML = periodTiles(stats.totals, stats.prev_totals, "전년대비");
-      const map = new Map(stats.series.map(s => [s.key, s]));
-      const labels = [];
-      for (let mm = 1; mm <= 12; mm++) labels.push(`${y}-${pad2(mm)}`);
-      drawIncomeExpenseChart($("yrChart"), labels,
-        labels.map(k => (map.get(k) || {}).income || 0),
-        labels.map(k => (map.get(k) || {}).expense || 0),
-        k => +k.slice(5) + "월", 1);
-      WCharts.hBars($("yrIncBreak"), stats.income_by_category, getCss("--series-income"));
-      WCharts.hBars($("yrClientBreak"), stats.top_clients, getCss("--series-income"));
-      $("yrTable").innerHTML = seriesTable(
-        labels.map(k => map.get(k) || { key: k, income: 0, expense: 0, profit: 0 }),
-        "영업월", k => `${+k.slice(5)}월`);
-    } catch (err) { toast(err.message, true); }
-  };
-  $("yrYear").addEventListener("change", refreshers.yearly);
+  }
+  $("balRecBulk").addEventListener("click", () => bulkSettle("rec"));
+  $("balPayBulk").addEventListener("click", () => bulkSettle("pay"));
 
   // ---------------------------------------------------------------- 코드관리
   const CODE_GROUPS = [
-    { group: "income_type", name: "매출유형", childGroup: "income_category", childName: "매출구분" },
-    { group: "expense_type", name: "지출유형", childGroup: "expense_item", childName: "거래품목" },
+    { group: "income_type", name: "매출유형", childGroup: "income_category", childName: "매출구분",
+      sub: "매출유형과 각 유형에 속한 매출구분(서비스 구분)을 관리합니다." },
+    { group: "expense_type", name: "지출유형", childGroup: "expense_item", childName: "거래품목",
+      sub: "지출유형과 각 유형에 속한 거래품목을 관리합니다." },
     { group: "payment_type", name: "결제유형" },
     { group: "account", name: "계좌" },
-    { group: "manufacturer", name: "차량제조사" },
+    { group: "manufacturer", name: "브랜드 (차량제조사)", childGroup: "car_model", childName: "차종",
+      sub: "차량 브랜드와 브랜드별 차종을 관리합니다. 매출 화면에서는 목록에 없는 차종도 직접 적을 수 있습니다." },
     { group: "client", name: "거래처" },
     { group: "currency", name: "거래통화" },
   ];
@@ -1002,7 +1043,7 @@
         inner += `<div class="code-list">` + chipList(def.group, "") + `</div>` +
           addRow(def.group, "", `${def.name} 추가`);
       } else {
-        inner += `<div class="code-sub">${def.name}과 각 유형에 속한 ${def.childName}을 관리합니다.</div>`;
+        inner += `<div class="code-sub">${def.sub}</div>`;
         inner += `<div class="code-list">` + chipList(def.group, "") + `</div>` +
           addRow(def.group, "", `${def.name} 추가`);
         for (const parent of codeValues(def.group)) {
@@ -1076,8 +1117,26 @@
     finally { $("xpDownload").disabled = false; }
   });
 
-  // ---------------------------------------------------------------- 데이터 관리: 엑셀 가져오기
-  let imp = null;  // { files: [parse 결과], selected: Set(sheet id) }
+  // ---------------------------------------------------------------- 데이터 관리: 엑셀 입력 양식
+  $("tplDownload").addEventListener("click", async () => {
+    try { toast(`${await download("/api/template.xlsx")} 파일을 받았습니다.`); }
+    catch (err) { toast(err.message, true); }
+  });
+
+  // ---------------------------------------------------------------- 데이터 관리: 엑셀 올리기 (자동 반영)
+  const AUTO_KEY = "wellcar_import_auto";
+  try {
+    const v = localStorage.getItem(AUTO_KEY);
+    if (v !== null) $("importAuto").checked = v === "1";
+  } catch (_e) { /* 저장소 사용 불가 */ }
+  $("importAuto").addEventListener("change", () => {
+    try { localStorage.setItem(AUTO_KEY, $("importAuto").checked ? "1" : "0"); } catch (_e) { /* 무시 */ }
+  });
+  const importMode = () => (document.querySelector('input[name="importMode"]:checked') || {}).value || "append";
+  document.querySelectorAll('input[name="importMode"]').forEach(r =>
+    r.addEventListener("change", () => { if (imp) analyzeImport(false); }));
+
+  let imp = null;  // { files, sheets, selected, combined, plan, seq, reconOk }
 
   function importReset() {
     imp = null;
@@ -1085,6 +1144,7 @@
     $("importFileName").textContent = "";
     $("importPreview").hidden = true;
     $("importResult").hidden = true;
+    $("importSummary").innerHTML = "";
   }
 
   async function handleImportFiles(fileList) {
@@ -1094,6 +1154,8 @@
     if (bad.length) { toast("xlsx 또는 xlsm 파일만 올릴 수 있습니다: " + bad.map(f => f.name).join(", "), true); return; }
     $("importResult").hidden = true;
     $("importPreview").hidden = true;
+    $("importSummary").innerHTML = "";
+    imp = null;
     $("importFile").value = ""; // 같은 파일을 다시 선택해도 change 이벤트가 발생하도록
     const parsed = [];
     for (let i = 0; i < files.length; i++) {
@@ -1107,11 +1169,50 @@
         return;
       }
     }
+    // 이 시스템에서 받은 파일(시스템 식별자가 같음)만 관리번호로 기존 내역을 고친다.
+    // 다른 시스템·옛 파일의 관리번호는 버리고 일반 내역처럼 중복 판정으로 맞춘다.
+    for (const f of parsed) {
+      const mine = !!(f.meta && f.meta.instance && f.meta.instance === META.instance);
+      for (const sh of f.sheets) {
+        for (const r of sh.records) {
+          if (mine && r.id) r.ref_time = f.meta.exported_at || "";
+          else { delete r.id; delete r._absent; }
+        }
+      }
+    }
     $("importFileName").textContent = files.map(f => f.name).join(", ");
     const sheets = parsed.flatMap(p => p.sheets);
     sheets.forEach((s, i) => { s.id = "s" + i; });  // 화면의 체크박스와 짝을 맞추는 간단한 번호
-    imp = { files: parsed, sheets, selected: new Set(sheets.filter(s => s.records.length).map(s => s.id)) };
+    imp = { files: parsed, sheets, selected: new Set(sheets.filter(s => s.records.length).map(s => s.id)), seq: 0 };
+    await analyzeImport(true);
+  }
+
+  /** 서버에 미리보기(바꾸지 않고 계획만)를 받아 보여 주고, 확인할 것이 없으면 바로 반영한다 */
+  async function analyzeImport(allowAuto) {
+    if (!imp) return;
+    const c = WellcarXlsx.combine(imp.sheets, imp.selected);
+    imp.combined = c;
+    imp.plan = null;
     renderImportPreview();
+    if (!c.incomes.length && !c.expenses.length) return;
+    const my = ++imp.seq;
+    try {
+      const plan = await post("/api/import-json", { incomes: c.incomes, expenses: c.expenses, mode: importMode(), dry_run: true });
+      if (!imp || my !== imp.seq) return;
+      // 확인할 것이 없으면 계획을 보여 주지 않고 바로 반영 (결과 화면에 같은 표가 나온다)
+      if (allowAuto && $("importAuto").checked && importIsClean(plan)) { await commitImport(true); return; }
+      imp.plan = plan;
+      renderImportPreview();
+    } catch (err) { toast(err.message, true); }
+  }
+
+  const planTotal = (plan, k) => plan.incomes[k] + plan.expenses[k];
+  /** 바로 반영해도 되는 경우: 바뀌는 것이 있고, 오류·충돌·삭제·건너뛴 행·합계 차이가 없을 때 */
+  function importIsClean(plan) {
+    const skipRows = imp.files.flatMap(f => f.issues).some(i => i.level === "skip");
+    return planTotal(plan, "added") + planTotal(plan, "updated") > 0 &&
+      !planTotal(plan, "conflict") && !planTotal(plan, "missing") && !planTotal(plan, "invalid") &&
+      !planTotal(plan, "deleted") && !skipRows && imp.reconOk !== false;
   }
 
   const monthKey = d => d.slice(0, 7);
@@ -1128,11 +1229,15 @@
   const statusChip = (ok, okText, badText) =>
     `<span class="status ${ok ? "ok" : "warn"}">${ok ? "✓ " + okText : "⚠ " + badText}</span>`;
 
-  /** 엑셀 경영분석(월별 합계) 시트와 읽어 낸 내역의 월별 합계를 비교 */
+  /** 엑셀 경영분석(월별 합계) 시트와 읽어 낸 내역의 월별 합계를 비교.
+   *  이 시스템이 내보낸 파일의 월별손익은 내보낼 때 계산한 고정 값이라, 내역을 고쳐 올리면 당연히 달라지므로 대조하지 않는다. */
   function summaryCheck(combined) {
-    const sums = imp.files.flatMap(f => f.summaries.map(s => Object.assign({ file: f.file }, s)));
+    imp.reconOk = null;
+    const sums = imp.files.filter(f => !f.meta).flatMap(f => f.summaries.map(s => Object.assign({ file: f.file }, s)));
     if (!sums.length) {
-      return `<p class="form-hint">파일에 월별 합계 시트(경영분석)가 없어 엑셀 자체 합계와의 대조는 건너뜁니다.</p>`;
+      return imp.files.some(f => f.meta)
+        ? `<p class="form-hint">이 시스템에서 받은 파일입니다. 고친 줄은 관리번호로 찾아 반영합니다.</p>`
+        : `<p class="form-hint">파일에 월별 합계 시트(경영분석)가 없어 엑셀 자체 합계와의 대조는 건너뜁니다.</p>`;
     }
     const inc = monthAgg(combined.incomes), exp = monthAgg(combined.expenses);
     // 경영분석 표에는 월만 있으므로, 같은 파일에서 고른 시트의 내역에 가장 많이 나온 연도로 본다
@@ -1165,6 +1270,7 @@
           `<td>${statusChip(ok, "일치", `차이 매출 ${fmt(fi - mo.income)} · 지출 ${fmt(fe - mo.expense)}`)}</td></tr>`);
       }
       if (!rows.length) continue;
+      imp.reconOk = imp.reconOk !== false && allOk;
       html += `<div class="recon">
         <div class="recon-head"><b>엑셀 ‘${esc(s.sheet)}’ 월별 합계와 대조</b> ${statusChip(allOk, "모든 달 일치", "차이가 있는 달이 있습니다")}</div>
         <div class="table-wrap"><table class="data compact"><thead><tr><th>월</th><th class="num">매출(읽은 내역)</th><th class="num">매출(엑셀 합계)</th>
@@ -1175,25 +1281,53 @@
     return html || `<p class="form-hint">월별 합계 시트가 있지만 금액이 모두 0이어서 대조할 내용이 없습니다.</p>`;
   }
 
+  const PLAN_COLS = [["added", "새로 등록"], ["updated", "고친 내용 반영"], ["same", "이미 있음 (건너뜀)"],
+    ["deleted", "삭제 (맞추기)"], ["conflict", "충돌 (건너뜀)"], ["missing", "없는 관리번호"], ["invalid", "오류"]];
+  const SAMPLE_TITLES = { updated: "고칠 내역", deleted: "지울 내역", conflict: "충돌 — 시스템에서 먼저 고친 내역", missing: "시스템에 없는 관리번호", invalid: "오류로 반영하지 않는 행" };
+
+  /** 서버 계획(dry_run 또는 반영 결과)을 표로 */
+  function planTable(plan) {
+    const shown = PLAN_COLS.filter(([k]) => k === "added" || k === "same" || planTotal(plan, k));
+    const cell = (kind, k) => {
+      const n = plan[kind][k];
+      const cls = !n ? "muted" : k === "conflict" || k === "missing" || k === "invalid" ? "due" : k === "deleted" ? "neg" : "strong";
+      return `<td class="num ${cls}">${n ? fmt(n) + "건" : "–"}</td>`;
+    };
+    const samples = [];
+    for (const k of Object.keys(SAMPLE_TITLES)) {
+      const list = [...(plan.samples.incomes[k] || []).map(x => ["매출", x]), ...(plan.samples.expenses[k] || []).map(x => ["지출", x])];
+      if (!list.length) continue;
+      samples.push(`<details class="issues"${k === "conflict" || k === "invalid" || k === "deleted" ? " open" : ""}><summary>${SAMPLE_TITLES[k]} ${fmt(planTotal(plan, k))}건${planTotal(plan, k) > list.length ? ` (${fmt(list.length)}건만 표시)` : ""}</summary><ul>` +
+        list.map(([kind, x]) => `<li class="${k === "updated" ? "" : "skip"}"><b>${kind} ${esc(x.trx_date)} ${fmt(x.amount)}원${x.client ? " · " + esc(x.client) : ""}</b>` +
+          `${x.src ? ` <span class="muted">(${esc(x.src)})</span>` : ""} — ${esc(x.reason)}</li>`).join("") + `</ul></details>`);
+    }
+    return `<div class="table-wrap"><table class="data compact plan-table"><thead><tr><th></th>` +
+      shown.map(([, l]) => `<th class="num">${l}</th>`).join("") + `</tr></thead><tbody>` +
+      ["incomes", "expenses"].map(kind => `<tr><td>${kind === "incomes" ? "매출" : "지출"}</td>` +
+        shown.map(([k]) => cell(kind, k)).join("") + `</tr>`).join("") +
+      `</tbody></table></div>${samples.join("")}`;
+  }
+
   function renderImportPreview() {
     const multi = imp.files.length > 1;
     if (!imp.sheets.length) {
       $("importSummary").innerHTML =
-        '<p class="empty-msg">매출집계/지출집계 형식의 시트를 찾지 못했습니다.<br>' +
-        "'영업일자'와 '매출액'(또는 '지출금액') 열이 있는 시트가 필요합니다.</p>";
+        '<p class="empty-msg">매출·지출 내역 시트를 찾지 못했습니다.<br>' +
+        "'영업일자'와 '매출액'(또는 '지출금액') 열이 있는 시트가 필요합니다. 입력 양식을 받아 쓰면 편합니다.</p>";
       $("importPreview").hidden = false;
       $("importCommit").disabled = true;
       return;
     }
-    const c = WellcarXlsx.combine(imp.sheets, imp.selected);
-    imp.combined = c;
+    const c = imp.combined;
     const all = [...c.incomes, ...c.expenses];
     const dates = all.map(r => r.trx_date).sort();
     const incSum = c.incomes.reduce((a, r) => a + r.amount, 0);
     const expSum = c.expenses.reduce((a, r) => a + r.amount, 0);
     const recv = c.incomes.filter(r => r.receivable > 0);
     const payb = c.expenses.filter(r => r.payable > 0);
+    const pout = c.incomes.filter(r => r.payout > 0);
     const foreign = all.filter(r => r.currency !== "KRW").length;
+    const withId = all.filter(r => r.id).length;
     const sheetRows = imp.sheets.map(s => {
       const ps = c.perSheet[s.id] || { used: 0, dup: 0 };
       const on = imp.selected.has(s.id);
@@ -1212,32 +1346,49 @@
       ? `<details class="issues"${skipN ? " open" : ""}><summary>건너뛴 행 ${fmt(skipN)}건 · 참고 ${fmt(issues.length - skipN)}건${issues.length >= 300 ? " (일부만 표시)" : ""}</summary>
           <ul>${issues.map(i => `<li class="${i.level === "skip" ? "skip" : ""}"><b>${multi ? esc(i.file) + " › " : ""}${esc(i.sheet)} ${i.row}행</b> — ${esc(i.reason)}</li>`).join("")}</ul></details>`
       : "";
+    const recon = summaryCheck(c);
+    const plan = imp.plan;
+    const mode = importMode();
+    let planHtml;
+    if (!all.length) planHtml = "";
+    else if (!plan) planHtml = '<p class="form-hint">시스템과 맞춰 보는 중…</p>';
+    else {
+      planHtml = `<div class="plan-box"><div class="plan-head"><b>${mode === "sync" ? "엑셀 장부와 맞추면" : "반영하면"}</b>` +
+        `${planTotal(plan, "added") + planTotal(plan, "updated") + planTotal(plan, "deleted") ? "" : ' <span class="status ok">✓ 파일의 내역이 이미 모두 들어 있습니다</span>'}</div>${planTable(plan)}</div>`;
+    }
     $("importSummary").innerHTML =
       `<div class="import-stats">
         <span class="import-stat">매출<b>${fmt(c.incomes.length)}건 · ${fmtWon(incSum)}</b></span>
         <span class="import-stat">지출<b>${fmt(c.expenses.length)}건 · ${fmtWon(expSum)}</b></span>
         <span class="import-stat">기간<b>${dates.length ? `${dates[0]} ~ ${dates[dates.length - 1]}` : "-"}</b></span>
         ${recv.length ? `<span class="import-stat">미수금<b>${fmt(recv.length)}건 · ${fmtWon(recv.reduce((a, r) => a + r.receivable, 0))}</b></span>` : ""}
-        ${payb.length ? `<span class="import-stat">미지급금<b>${fmt(payb.length)}건 · ${fmtWon(payb.reduce((a, r) => a + r.payable, 0))}</b></span>` : ""}
+        ${pout.length ? `<span class="import-stat">미지급금(매출차감)<b>${fmt(pout.length)}건 · ${fmtWon(pout.reduce((a, r) => a + r.payout, 0))}</b></span>` : ""}
+        ${payb.length ? `<span class="import-stat">지출 미지급금<b>${fmt(payb.length)}건 · ${fmtWon(payb.reduce((a, r) => a + r.payable, 0))}</b></span>` : ""}
         ${foreign ? `<span class="import-stat">외화 거래<b>${fmt(foreign)}건</b></span>` : ""}
+        ${withId ? `<span class="import-stat">관리번호 있는 줄<b>${fmt(withId)}건</b></span>` : ""}
         ${c.dupInFile ? `<span class="import-stat">시트 간 중복 제외<b>${fmt(c.dupInFile)}건</b></span>` : ""}
       </div>
+      ${planHtml}
       <div class="table-wrap" style="max-height:300px;overflow-y:auto">
-        <table class="data compact"><thead><tr><th>시트 (체크한 시트만 저장)</th>${multi ? "<th>파일</th>" : ""}<th>종류</th>
+        <table class="data compact"><thead><tr><th>시트 (체크한 시트만 반영)</th>${multi ? "<th>파일</th>" : ""}<th>종류</th>
         <th class="num">읽은 건수</th><th class="num">금액 합계</th><th class="num">다른 시트와 중복</th><th class="num">건너뛴 행</th></tr></thead>
         <tbody>${sheetRows}</tbody></table>
       </div>
-      ${summaryCheck(c)}
+      ${recon}
       ${issueList}`;
     $("importPreview").hidden = false;
-    $("importCommit").disabled = !all.length;
+    const changes = plan ? planTotal(plan, "added") + planTotal(plan, "updated") + planTotal(plan, "deleted") : 0;
+    $("importCommit").disabled = !plan || !changes;
+    $("importCommit").textContent = !plan ? "반영하기" : !changes ? "반영할 내용 없음"
+      : `반영하기 (${[["added", "새"], ["updated", "수정"], ["deleted", "삭제"]]
+        .filter(([k]) => planTotal(plan, k)).map(([k, l]) => `${l} ${fmt(planTotal(plan, k))}건`).join(" · ")})`;
   }
 
   $("importSummary").addEventListener("change", e => {
     const cb = e.target.closest("[data-sheet]");
     if (!cb || !imp) return;
     if (cb.checked) imp.selected.add(cb.dataset.sheet); else imp.selected.delete(cb.dataset.sheet);
-    renderImportPreview();
+    analyzeImport(false);
   });
 
   $("importBrowse").addEventListener("click", () => $("importFile").click());
@@ -1252,12 +1403,16 @@
     handleImportFiles(e.dataTransfer.files);
   });
 
-  /** 저장 후: 파일에서 읽은 월별 건수·금액과 시스템(DB)의 월별 건수·금액 대조 */
+  /** 반영 후: 파일에서 읽은 월별 건수·금액과 시스템(DB)의 월별 건수·금액 대조 */
   async function reconcileAfterImport(c) {
     const dates = [...c.incomes, ...c.expenses].map(r => r.trx_date).sort();
     if (!dates.length) return "";
-    const months = await api(`/api/stats/months?from=${dates[0]}&to=${dates[dates.length - 1]}`);
-    const db = new Map(months.map(m => [m.month, m]));
+    const from = dates[0], to = dates[dates.length - 1];
+    const [mi, me] = await Promise.all([agg("incomes", from, to, "month"), agg("expenses", from, to, "month")]);
+    const db = new Map();
+    const slot = k => db.get(k) || (db.set(k, { income_count: 0, income: 0, expense_count: 0, expense: 0 }), db.get(k));
+    for (const r of mi) Object.assign(slot(r.month), { income_count: r.cnt, income: r.amount });
+    for (const r of me) Object.assign(slot(r.month), { expense_count: r.cnt, expense: r.amount });
     const inc = monthAgg(c.incomes), exp = monthAgg(c.expenses);
     const keys = [...new Set([...inc.keys(), ...exp.keys()])].sort();
     let missing = 0, extra = 0;
@@ -1278,46 +1433,49 @@
       ? `<span class="status warn">⚠ ${missing}개 달은 시스템 건수가 파일보다 적습니다. 형식 오류로 빠진 행이 있는지 확인하세요.</span>`
       : `<span class="status ok">✓ 파일의 내역이 모두 시스템에 들어 있습니다.</span>` +
         (extra ? ` <span class="muted">(${extra}개 달은 직접 입력한 내역 등이 더 있어 시스템 쪽이 큽니다)</span>` : "");
-    return `<div class="recon"><div class="recon-head"><b>가져온 뒤 대조 (파일 ↔ 시스템)</b> ${head}</div>
+    return `<div class="recon"><div class="recon-head"><b>반영 뒤 대조 (파일 ↔ 시스템)</b> ${head}</div>
       <div class="table-wrap"><table class="data compact"><thead><tr><th>월</th><th class="num">매출 · 파일</th><th class="num">매출 · 시스템</th>
       <th class="num">지출 · 파일</th><th class="num">지출 · 시스템</th><th>결과</th></tr></thead><tbody>${rows}</tbody></table></div></div>`;
   }
 
-  $("importCommit").addEventListener("click", async () => {
+  async function commitImport(auto) {
     if (!imp || !imp.combined) return;
     const c = imp.combined;
     $("importCommit").disabled = true;
-    $("importCommit").textContent = "저장 중…";
+    $("importCommit").textContent = "반영 중…";
     try {
-      const r = await post("/api/import-json", { incomes: c.incomes, expenses: c.expenses });
-      const detail = (added, skipped, invalid) =>
-        `<b>${fmt(added)}건 등록</b>` +
-        (skipped ? ` · 이미 있어 건너뜀 ${fmt(skipped)}건` : "") +
-        (invalid ? ` · 형식 오류 ${fmt(invalid)}건` : "");
-      const invalid = (r.invalid_samples || []).map(s =>
-        `<li><b>${esc(s.src) || "(위치 모름)"}</b> — ${esc(s.reason)}</li>`).join("");
+      const r = await post("/api/import-json", { incomes: c.incomes, expenses: c.expenses, mode: importMode() });
       let recon = "";
       try { recon = await reconcileAfterImport(c); } catch (_e) { /* 대조 실패는 결과 표시를 막지 않음 */ }
+      const undo = r.backup
+        ? (can("admin")
+          ? `<span class="undo-line">잘못 올렸다면 <button type="button" class="btn small" data-undo="${esc(r.backup)}">되돌리기</button> (반영 직전 백업으로 복원)</span>`
+          : `<span class="muted">잘못 올렸다면 관리자가 [백업·복원]에서 ‘가져오기 직전’ 백업으로 되돌릴 수 있습니다.</span>`)
+        : "";
       $("importResult").innerHTML = `<div class="import-result-box">
-        <span class="res-title">✓ 가져오기 완료</span>
-        <span>매출 ${detail(r.incomes_added, r.incomes_skipped, r.incomes_invalid)}</span>
-        <span>지출 ${detail(r.expenses_added, r.expenses_skipped, r.expenses_invalid)}</span>
+        <span class="res-title">✓ ${auto ? "자동 반영 완료" : "반영 완료"}${r.mode === "sync" ? " — 엑셀 장부와 맞춤" : ""}</span>
+        ${planTable(r)}
         <span>${r.codes_added ? `신규 코드 ${fmt(r.codes_added)}개가 코드관리에 자동 추가되었습니다.` : "신규 코드는 없습니다."}</span>
-        ${r.backup ? `<span class="muted">가져오기 직전 상태를 백업했습니다: ${esc(r.backup)}</span>` : ""}
-        ${invalid ? `<details class="issues"><summary>등록하지 못한 행 보기</summary><ul>${invalid}</ul></details>` : ""}
+        ${r.backup ? `<span class="muted">반영 직전 상태를 백업했습니다: ${esc(r.backup)}</span>` : ""}
+        ${undo}
       </div>${recon}`;
       $("importResult").hidden = false;
       $("importPreview").hidden = true;
       imp = null;
+      invalidateTargets();
       await Promise.all([loadCodes(), loadMeta()]);
       loadBackups();
-      toast("엑셀 데이터 가져오기가 완료되었습니다.");
+      toast(auto ? "엑셀 내용을 자동으로 반영했습니다." : "엑셀 내용을 반영했습니다.");
     } catch (err) {
       toast(err.message, true);
-    } finally {
       $("importCommit").disabled = false;
-      $("importCommit").textContent = "DB에 저장";
+      $("importCommit").textContent = "반영하기";
     }
+  }
+  $("importCommit").addEventListener("click", () => commitImport(false));
+  $("importResult").addEventListener("click", async e => {
+    const b = e.target.closest("[data-undo]");
+    if (b) await restoreBackup(b.dataset.undo, "가져오기 직전");
   });
 
   // ---------------------------------------------------------------- 데이터 관리: 백업·복원
@@ -1470,24 +1628,17 @@
 
   async function loadMeta() {
     try { META = await api("/api/meta"); } catch (_e) { /* 기본값 유지 */ }
-    const now = new Date();
-    const years = META.years.length ? META.years : [String(now.getFullYear())];
-    for (const sel of [$("monYear"), $("qtrYear"), $("yrYear")]) {
-      const prev = sel.value;
-      fillSelect(sel, years.map(String), false, years.map(y => y + "년"));
-      sel.value = prev && years.includes(prev) ? prev : String(now.getFullYear());
-      if (!sel.value) sel.value = years[years.length - 1];
-    }
+    reports.fillTargetYears(META.years || []);
   }
+
+  // 경영현황 · 매출·비용 분석 · 목표·실적 화면 (reports.js)
+  const reports = window.WellcarReports({
+    $, api, put, esc, fmt, fmtWon, toast, getCss, can, refreshers, nextReq, isStale,
+    metric, metricStrip, saveBlob, todayStr, loadTargets, invalidateTargets, agg, fillSelect,
+  });
 
   async function init() {
     await loadMeta();
-    const now = new Date();
-    fillSelect($("monMonth"), Array.from({ length: 12 }, (_, i) => String(i + 1)), false,
-      Array.from({ length: 12 }, (_, i) => `${i + 1}월`));
-    $("monMonth").value = String(now.getMonth() + 1);
-    $("qtrQuarter").value = String(Math.floor(now.getMonth() / 3) + 1);
-
     $("dashDate").value = todayStr();
     await loadCodes();
     resetIncomeForm();

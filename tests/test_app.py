@@ -140,7 +140,14 @@ class AuthTest(Base):
         self.assertEqual(staff.get("/api/backups").status_code, 403)
         self.assertEqual(self.post(staff, "/api/codes", {"code_group": "client",
                                                          "code_value": "x"}).status_code, 403)
-        self.assertEqual(self.post(staff, "/api/import-json", {"incomes": []}).status_code, 403)
+        # 엑셀 올리기: 직원은 추가·수정만, 맞추기(삭제가 있음)는 관리자만, 조회 전용은 불가
+        self.assertEqual(self.post(staff, "/api/import-json", {"incomes": []}).status_code, 200)
+        self.assertEqual(self.post(staff, "/api/import-json", {"incomes": [], "mode": "sync"}).status_code, 403)
+        self.assertEqual(self.post(viewer, "/api/import-json", {"incomes": []}).status_code, 403)
+        # 목표: 모두 보고 관리자만 수정
+        self.assertEqual(viewer.get("/api/targets").status_code, 200)
+        self.assertEqual(self.put(staff, "/api/targets", {"year": 2026, "months": {}}).status_code, 403)
+        self.assertEqual(viewer.get("/api/template.xlsx").status_code, 200)
 
     def test_password_change_invalidates_other_sessions(self):
         self.make_user("pwuser", "staff")
@@ -230,15 +237,99 @@ class EntryTest(Base):
         r = self.post(self.c, f"/api/incomes/{row['id']}/settle")
         self.assertEqual(r.get_json()["receivable"], 0)
         self.assertEqual(self.c.get("/api/receivables").get_json()["incomes"]["total"], 0)
-        daily = self.c.get("/api/stats/daily?date=2026-03-02").get_json()
-        self.assertEqual(daily["outstanding"]["receivable"], 0)
+        summary = self.c.get("/api/receivables?summary=1").get_json()
+        self.assertEqual(summary["incomes"], {"total": 0, "count": 0})
 
     def test_cash_counts_non_card(self):
+        """현금매출 = 카드 외 전부 (화면은 amount − card로 계산)"""
         self.income(payment_type="입금", amount=30000, vat=0, net_amount=30000)
         self.income(payment_type="카드")
-        t = self.c.get("/api/stats/daily?date=2026-03-02").get_json()["day"]["totals"]
-        self.assertEqual(t["card_income"], 110000)
-        self.assertEqual(t["cash_income"], 30000)
+        r = self.c.get("/api/agg?kind=incomes&from=2026-03-02&to=2026-03-02&group=date").get_json()
+        row = r["rows"][0]
+        self.assertEqual((row["date"], row["card"], row["amount"] - row["card"]), ("2026-03-02", 110000, 30000))
+
+    def test_payout_deducted_and_settled_separately(self):
+        """매출의 미지급금: 거래처에 줄 돈. 지급 완료해도 매출차감 금액은 그대로."""
+        row = self.income(amount=500000, vat=0, net_amount=500000, payout=150000)
+        self.assertEqual((row["payout"], row["payout_due"]), (150000, 150000))  # 지급 전으로 시작
+        bad = self.post(self.c, "/api/incomes", {"trx_date": "2026-03-02", "income_type": "기타",
+                                                 "amount": 1000, "payout": 2000})
+        self.assertEqual(bad.status_code, 400)
+        bad = self.put(self.c, f"/api/incomes/{row['id']}", {"payout_due": 200000})  # 잔액 > 미지급금
+        self.assertEqual(bad.status_code, 400)
+        rec = self.c.get("/api/receivables").get_json()
+        self.assertEqual((rec["payouts"]["total"], rec["payouts"]["count"]), (150000, 1))
+        r = self.post(self.c, f"/api/incomes/{row['id']}/settle", {"field": "payout_due"}).get_json()
+        self.assertEqual((r["payout"], r["payout_due"]), (150000, 0))
+        self.assertEqual(self.post(self.c, f"/api/incomes/{row['id']}/settle", {"field": "amount"}).status_code, 400)
+        agg = self.c.get("/api/agg?kind=incomes&from=2026-03-01&to=2026-03-31").get_json()["rows"][0]
+        self.assertEqual(agg["amount"] - agg["payout"], 350000)  # 실매출
+        # 일부만 보낸 수정: 저장된 값과 합쳐 검사·저장
+        r = self.put(self.c, f"/api/incomes/{row['id']}", {"memo": "고침"})
+        self.assertEqual((r.status_code, r.get_json()["payout"], r.get_json()["amount"]), (200, 150000, 500000))
+
+    def test_bulk_settle(self):
+        ids = [self.income(receivable=10000 * (i + 1))["id"] for i in range(3)]
+        r = self.post(self.c, "/api/settle-bulk", {"table": "incomes", "field": "receivable", "ids": ids[:2]})
+        self.assertEqual(r.get_json()["updated"], 2)
+        self.assertEqual(self.c.get("/api/receivables").get_json()["incomes"]["total"], 30000)
+        for bad in ({"table": "incomes", "field": "receivable", "ids": []},
+                    {"table": "users", "ids": [1]},
+                    {"table": "expenses", "field": "payout_due", "ids": [1]},
+                    {"table": "incomes", "ids": ["1"]}):
+            self.assertEqual(self.post(self.c, "/api/settle-bulk", bad).status_code, 400, bad)
+
+
+class AggregateTargetTest(Base):
+    def test_agg_groups_and_filters(self):
+        self.income(trx_date="2026-01-05", manufacturer="벤츠", car_model="E클래스", amount=300000, vat=0)
+        self.income(trx_date="2026-01-20", manufacturer="벤츠", car_model="S클래스", amount=200000, vat=0, payout=50000)
+        self.income(trx_date="2026-02-03", manufacturer="BMW", car_model="5시리즈", amount=100000, vat=0)
+        r = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-12-31&group=month,manufacturer").get_json()
+        got = {(x["month"], x["manufacturer"]): (x["cnt"], x["amount"], x["payout"]) for x in r["rows"]}
+        self.assertEqual(got, {("2026-01", "벤츠"): (2, 500000, 50000), ("2026-02", "BMW"): (1, 100000, 0)})
+        r = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-12-31&group=car_model"
+                       "&f.manufacturer=벤츠").get_json()
+        self.assertEqual(sorted(x["car_model"] for x in r["rows"]), ["E클래스", "S클래스"])
+        r = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-12-31").get_json()
+        self.assertEqual((r["rows"][0]["cnt"], r["rows"][0]["amount"]), (3, 600000))
+        db = sqlite3.connect(wellcar.DB_PATH)
+        db.execute("INSERT INTO expenses(trx_date, expense_type, item, amount, payable) "
+                   "VALUES ('2026-01-07','제품원가','제품매입',40000,10000)")
+        db.commit()
+        db.close()
+        e = self.c.get("/api/agg?kind=expenses&from=2026-01-01&to=2026-01-31&group=year").get_json()["rows"][0]
+        self.assertEqual((e["year"], e["amount"], e["cost"], e["payable"]), ("2026", 40000, 40000, 10000))
+        for q in ("kind=x&from=2026-01-01&to=2026-01-02", "kind=incomes&from=2026-02-01&to=2026-01-01",
+                  "kind=incomes&from=2026-01-01&to=2026-01-02&group=memo",
+                  "kind=incomes&from=2026-01-01&to=2026-01-02&group=date,date",
+                  "kind=incomes&from=2026-01-01&to=2026-01-02&f.memo=x",
+                  "kind=expenses&from=2026-01-01&to=2026-01-02&group=car_model",
+                  "kind=incomes&from=0001-01-01&to=2026-01-02", "kind=incomes&from=x&to=y"):
+            self.assertEqual(self.c.get(f"/api/agg?{q}").status_code, 400, q)
+
+    def test_targets_put_get_and_validation(self):
+        months = {"1": {"sales": 30000000, "profit": -500000, "expense": 20000000}, "2": {"sales": 10}}
+        r = self.put(self.c, "/api/targets", {"year": 2031, "months": months})
+        self.assertEqual(r.status_code, 200, r.get_json())
+        t = self.c.get("/api/targets").get_json()["targets"]
+        self.assertEqual(t["2031-01"], {"sales": 30000000, "profit": -500000, "expense": 20000000})
+        self.assertEqual(t["2031-02"], {"sales": 10})
+        # 다시 저장하면 그 해를 통째로 바꾼다 (빠진 달·빈 값은 지움)
+        self.put(self.c, "/api/targets", {"year": 2031, "months": {"2": {"sales": 20, "profit": ""}}})
+        t = self.c.get("/api/targets").get_json()["targets"]
+        self.assertNotIn("2031-01", t)
+        self.assertEqual(t["2031-02"], {"sales": 20})
+        for bad in ({"year": 2031, "months": {"1": {"sales": -1}}}, {"year": "2031", "months": {}},
+                    {"year": 2031, "months": {"1": {"sales": "많이"}}}, {"year": 2031, "months": {"1": 5}},
+                    {"year": 2031, "months": {"1": {"expense": 1e20}}}, {"year": 99999, "months": {}}):
+            self.assertEqual(self.put(self.c, "/api/targets", bad).status_code, 400, bad)
+        self.put(self.c, "/api/targets", {"year": 2031, "months": {}})
+
+    def test_seed_codes_include_car_models(self):
+        codes = self.c.get("/api/codes").get_json()
+        benz = [c["code_value"] for c in codes["car_model"] if c["parent_value"] == "벤츠"]
+        self.assertIn("E클래스", benz)
 
 
 class HardeningTest(Base):
@@ -256,8 +347,10 @@ class HardeningTest(Base):
         uid = self.c.get("/api/users").get_json()[0]["id"]
         self.assertEqual(self.put(self.c, f"/api/users/{uid}", {"active": "false"}).status_code, 400)
         self.assertEqual(self.post(self.c, "/api/codes", {"code_group": 1, "code_value": 2}).status_code, 201)
-        for q in ("monthly?year=0&month=1", "quarterly?year=99999&quarter=1", "yearly?year=0"):
-            self.assertEqual(self.c.get(f"/api/stats/{q}").status_code, 400, q)
+        for body in ({"incomes": "x"}, {"incomes": [], "mode": "replace"}, {"incomes": [1, "x", None]}):
+            r = self.post(self.c, "/api/import-json", body)
+            self.assertIn(r.status_code, (200, 400), body)
+        self.assertEqual(self.post(self.c, "/api/incomes/1/settle", {"field": "id"}).status_code, 400)
 
     def test_amount_rounds_half_up_like_screen(self):
         r = self.post(self.c, "/api/incomes", {"trx_date": "2026-03-02", "income_type": "기타", "amount": 1000.5})
@@ -302,27 +395,39 @@ class ImportExportTest(Base):
                 "payment_type": "법인체크", "amount": 30400, "payable": 10000, "src": "지출집계!6"}]
         return inc, exp
 
+    def imp(self, inc, exp=(), **kw):
+        r = self.post(self.c, "/api/import-json", dict({"incomes": list(inc), "expenses": list(exp)}, **kw))
+        self.assertEqual(r.status_code, 200, r.get_json())
+        return r.get_json()
+
     def test_import_idempotent_and_fields(self):
         inc, exp = self.rows()
-        r = self.post(self.c, "/api/import-json", {"incomes": inc, "expenses": exp}).get_json()
-        self.assertEqual((r["incomes_added"], r["incomes_skipped"], r["incomes_invalid"]), (3, 0, 1))
-        self.assertEqual(r["expenses_added"], 1)
-        self.assertEqual(r["invalid_samples"][0]["src"], "매출집계!9")
-        r2 = self.post(self.c, "/api/import-json", {"incomes": inc, "expenses": exp}).get_json()
-        self.assertEqual((r2["incomes_added"], r2["incomes_skipped"]), (0, 3))
-        self.assertEqual(r2["backup"], "")  # 새로 들어갈 게 없으면 백업도 만들지 않음
+        r = self.imp(inc, exp)
+        self.assertEqual((r["incomes"]["added"], r["incomes"]["same"], r["incomes"]["invalid"]), (3, 0, 1))
+        self.assertEqual(r["expenses"]["added"], 1)
+        self.assertEqual(r["samples"]["incomes"]["invalid"][0]["src"], "매출집계!9")
+        r2 = self.imp(inc, exp)
+        self.assertEqual((r2["incomes"]["added"], r2["incomes"]["same"]), (0, 3))
+        self.assertEqual(r2["backup"], "")  # 바뀌는 게 없으면 백업도 만들지 않음
         items = self.c.get("/api/incomes?size=10").get_json()["items"]
         cny = next(i for i in items if i["currency"] == "CNY")
         self.assertEqual((cny["exchange_rate"], cny["quantity"], cny["unit_price"]), (190.5, 2, 1000))
         self.assertEqual(sum(i["receivable"] for i in items), 250000)
+        self.assertTrue(all(i["source"] == "excel" and i["import_key"] for i in items))
         e = self.c.get("/api/expenses").get_json()["items"][0]
         self.assertEqual(e["payable"], 10000)
-        months = self.c.get("/api/stats/months?from=2026-01-01&to=2026-01-31").get_json()
-        self.assertEqual(months[0]["income_count"], 3)
-        self.assertEqual(months[0]["income"], 750000 * 2 + 381000)
+        months = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-01-31&group=month").get_json()["rows"]
+        self.assertEqual(months[0]["cnt"], 3)
+        self.assertEqual(months[0]["amount"], 750000 * 2 + 381000)
+
+    def test_dry_run_changes_nothing(self):
+        inc, exp = self.rows()
+        r = self.imp(inc, exp, dry_run=True)
+        self.assertEqual((r["dry_run"], r["incomes"]["added"], r["backup"]), (True, 3, ""))
+        self.assertEqual(self.c.get("/api/incomes").get_json()["total"], 0)
 
     def test_old_rows_without_payable_note_are_duplicates(self):
-        """이전 버전이 적요에 '[미지급금 …]' 없이 가져온 행도 같은 거래로 본다."""
+        """이전 버전이 적요에 '[미지급금 …]'을 붙였든 안 붙였든 같은 거래로 본다."""
         db = sqlite3.connect(wellcar.DB_PATH)
         db.execute("INSERT INTO incomes(trx_date, income_type, category, client, amount, vat, net_amount, memo) "
                    "VALUES ('2026-02-01','서비스제공','데크수리','A',500000,0,500000,'작업')")
@@ -330,40 +435,129 @@ class ImportExportTest(Base):
         db.close()
         row = {"trx_date": "2026-02-01", "income_type": "서비스제공", "category": "데크수리", "client": "A",
                "amount": 500000, "vat": 0, "net_amount": 500000, "memo": "작업 [미지급금 50,000원]"}
-        r = self.post(self.c, "/api/import-json", {"incomes": [row], "expenses": []}).get_json()
-        self.assertEqual((r["incomes_added"], r["incomes_skipped"]), (0, 1))
+        r = self.imp([row])
+        self.assertEqual((r["incomes"]["added"], r["incomes"]["same"]), (0, 1))
+
+    def test_old_payout_note_migrated(self):
+        """예전 가져오기가 적요에 남긴 '[미지급금 N원]'은 미지급금(매출차감) 열로 옮긴다."""
+        db = sqlite3.connect(wellcar.DB_PATH)
+        db.row_factory = sqlite3.Row
+        db.execute("INSERT INTO incomes(trx_date, income_type, client, amount, vat, net_amount, memo, created_by) "
+                   "VALUES ('2026-02-01','서비스제공','A',500000,0,500000,'작업 [미지급금 50,000원]','사장 (엑셀)')")
+        wellcar._data_migrations(db)
+        db.commit()
+        r = db.execute("SELECT memo, payout, payout_due, source, import_key FROM incomes").fetchone()
+        db.close()
+        self.assertEqual((r["memo"], r["payout"], r["payout_due"], r["source"]), ("작업", 50000, 50000, "excel"))
+        self.assertTrue(r["import_key"].startswith("2026-02-01"))
+
+    def test_web_edit_of_imported_row_not_duplicated(self):
+        """엑셀로 들어온 내역을 화면에서 고친 뒤 같은 파일을 다시 올려도 다시 들어오지 않는다."""
+        inc, _ = self.rows()
+        self.imp(inc[:1])
+        row = self.c.get("/api/incomes").get_json()["items"][0]
+        self.put(self.c, f"/api/incomes/{row['id']}", {"amount": 760000, "memo": "화면에서 고침"})
+        r = self.imp(inc[:1])
+        self.assertEqual((r["incomes"]["added"], r["incomes"]["same"]), (0, 1))
+
+    def test_update_by_management_number(self):
+        """이 시스템에서 받은 엑셀을 고쳐 올리면 관리번호로 그 내역을 고친다(충돌·삭제된 번호는 건너뜀)."""
+        a = self.income(amount=100000, vat=0, net_amount=100000, memo="원래")
+        b = self.income(amount=200000, vat=0, net_amount=200000, memo="둘째")
+        exported = "2999-01-01 00:00:00"  # 내보낸 시각이 나중이면 충돌 아님
+        rows = [dict(a, amount=150000, net_amount=150000, memo="엑셀에서 고침", ref_time=exported),
+                dict(b, ref_time=exported),  # 그대로
+                dict(a, id=987654, ref_time=exported)]  # 없는 관리번호
+        for r in rows:
+            r.pop("created_at", None)
+        res = self.imp(rows)
+        self.assertEqual((res["incomes"]["updated"], res["incomes"]["same"], res["incomes"]["missing"]), (1, 1, 1))
+        got = self.c.get(f"/api/incomes/{a['id']}").get_json()
+        self.assertEqual((got["amount"], got["memo"]), (150000, "엑셀에서 고침"))
+        self.assertTrue(got["updated_by"].endswith("(엑셀)"))
+        # 파일을 받은 뒤 시스템에서 고친 내역은 덮어쓰지 않는다
+        stale = dict(b, amount=999000, ref_time="2000-01-01 00:00:00")
+        stale.pop("created_at", None)
+        res = self.imp([stale])
+        self.assertEqual(res["incomes"]["conflict"], 1)
+        self.assertEqual(self.c.get(f"/api/incomes/{b['id']}").get_json()["amount"], 200000)
+        # 파일에 없는 열(_absent)은 건드리지 않는다
+        part = {"id": b["id"], "ref_time": exported, "trx_date": b["trx_date"], "income_type": b["income_type"],
+                "amount": b["amount"], "memo": "적요만", "_absent": ["client", "category", "vat", "net_amount"]}
+        self.imp([part])
+        got = self.c.get(f"/api/incomes/{b['id']}").get_json()
+        self.assertEqual((got["memo"], got["client"], got["category"]), ("적요만", "개인", "데크수리"))
+
+    def test_sync_mode_matches_excel_ledger(self):
+        """엑셀 장부와 맞추기: 엑셀로 들어온 내역만 파일과 똑같이 (직접 입력한 내역은 그대로)."""
+        inc, _ = self.rows()
+        self.imp(inc[:3])
+        web = self.income(trx_date="2026-01-03", amount=55000, vat=0, net_amount=55000, memo="화면 입력")
+        edited = [inc[0], dict(inc[2], amount=400000, vat=36364, net_amount=363636)]  # 1줄 지움 · 1줄 금액 고침
+        plan = self.imp(edited, mode="sync", dry_run=True)
+        self.assertEqual((plan["incomes"]["deleted"], plan["incomes"]["added"], plan["incomes"]["same"]), (2, 1, 1))
+        self.assertEqual(self.c.get("/api/incomes").get_json()["total"], 4)  # 미리보기는 그대로
+        res = self.imp(edited, mode="sync")
+        self.assertTrue(res["backup"].endswith("-pre-import.db"))
+        items = self.c.get("/api/incomes?size=50").get_json()["items"]
+        self.assertEqual(sorted(i["amount"] for i in items), [55000, 400000, 750000])
+        self.assertIn(web["id"], [i["id"] for i in items])
+        again = self.imp(edited, mode="sync")
+        self.assertEqual((again["incomes"]["added"], again["incomes"]["deleted"], again["incomes"]["same"]), (0, 0, 2))
 
     def test_import_makes_pre_import_backup(self):
         self.income()
         inc, exp = self.rows()
-        r = self.post(self.c, "/api/import-json", {"incomes": inc, "expenses": exp}).get_json()
+        r = self.imp(inc, exp)
         self.assertTrue(r["backup"].endswith("-pre-import.db"))
         self.assertTrue(os.path.isfile(os.path.join(wellcar.BACKUP_DIR, r["backup"])))
 
     def test_export_round_trip(self):
         inc, exp = self.rows()
-        self.post(self.c, "/api/import-json", {"incomes": inc, "expenses": exp})
+        self.imp(inc, exp)
         r = self.c.get("/api/export.xlsx?from=2026-01-01&to=2026-12-31")
         self.assertEqual(r.status_code, 200)
         self.assertIn("attachment", r.headers["Content-Disposition"])
         wb = load_workbook(io.BytesIO(r.data))
-        self.assertEqual(wb.sheetnames, ["요약", "월별손익", "매출내역", "지출내역"])
+        self.assertEqual(wb.sheetnames, ["요약", "월별손익", "브랜드별", "차종별", "서비스구분별", "지출유형별",
+                                         "매출내역", "지출내역"])
         ws = wb["매출내역"]
         head = [c.value for c in ws[1]]
-        self.assertIn("미수금", head)
-        self.assertIn("거래통화", head)
+        for h in ("미수금", "거래통화", "브랜드", "차종", "미지급금", "미지급 잔액", "관리번호"):
+            self.assertIn(h, head)
         self.assertEqual(ws.max_row, 4)  # 헤더 + 3건
+        ids = sorted(ws.cell(row=i, column=head.index("관리번호") + 1).value for i in range(2, 5))
+        self.assertEqual(ids, sorted(i["id"] for i in self.c.get("/api/incomes").get_json()["items"]))
         memo_col = head.index("적요")
         memos = [ws.cell(row=i, column=memo_col + 1) for i in range(2, 5)]
         formula_cell = next(c for c in memos if str(c.value).startswith("="))
         self.assertEqual(formula_cell.data_type, "s")  # 수식으로 실행되지 않음
         monthly = wb["월별손익"]
         self.assertEqual(monthly.cell(row=2, column=1).value, "2026-01")
+        summary = {r[0]: r[1] for r in wb["요약"].iter_rows(values_only=True) if r and r[0]}
+        meta = self.c.get("/api/meta").get_json()
+        self.assertEqual(summary["시스템 식별자"], meta["instance"])
+        self.assertRegex(summary["내보낸 시각"], r"^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$")
+        brands = list(wb["브랜드별"].iter_rows(values_only=True))
+        self.assertEqual(brands[2][:4], ("브랜드", "건수", "합계", "비중"))
         # 조건 내보내기: 매출만, 검색어
         r = self.c.get("/api/export.xlsx?kind=incomes&q=B")
         wb = load_workbook(io.BytesIO(r.data))
-        self.assertEqual(wb.sheetnames, ["요약", "월별손익", "매출내역"])
+        self.assertEqual(wb.sheetnames, ["요약", "월별손익", "브랜드별", "차종별", "서비스구분별", "매출내역"])
         self.assertEqual(wb["매출내역"].max_row, 2)
+
+    def test_template_has_dropdowns(self):
+        r = self.c.get("/api/template.xlsx")
+        self.assertEqual(r.status_code, 200)
+        wb = load_workbook(io.BytesIO(r.data))
+        self.assertEqual(wb.sheetnames, ["작성 안내", "매출입력", "지출입력", "코드목록"])
+        head = [c.value for c in wb["매출입력"][1]]
+        for h in ("영업일자", "매출유형", "매출액", "브랜드", "차종", "미지급금", "미지급금 지급완료"):
+            self.assertIn(h, head)
+        refs = [str(dv.sqref) for dv in wb["매출입력"].data_validations.dataValidation]
+        self.assertIn("B2:B1001", refs)  # 매출유형 드롭다운
+        codes = [c.value for c in wb["코드목록"]["A"]][1:]
+        self.assertIn("서비스제공", codes)
 
 
 class BackupTest(Base):

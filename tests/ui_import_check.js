@@ -1,5 +1,5 @@
-/* 엑셀 가져오기 검증 (Playwright). 실제 장부 파일이나 make_sample_workbook.py로 만든 파일을
-   화면에서 그대로 올려 보고, 분석 결과·경영분석 대조·가져온 뒤 대조·재업로드 멱등성을 확인한다.
+/* 엑셀 올리기 검증 (Playwright). 실제 장부 파일이나 make_sample_workbook.py로 만든 파일을
+   화면에서 그대로 올려 보고, 분석 결과·경영분석 대조·반영 뒤 대조·재업로드 멱등성을 확인한다.
 
      LANG=C.UTF-8 NODE_PATH=$(npm root -g) FILE=/tmp/sample.xlsm [TRUTH=/tmp/sample.json] node tests/ui_import_check.js
 
@@ -35,25 +35,38 @@ const text = s => (s || "").replace(/\s+/g, " ").trim();
   await page.waitForSelector("#appShell:not([hidden])");
   await page.click('#mainTabs [data-view="data"]');
 
+  /** 올리기: 확인할 것이 없으면 자동 반영되고, 있으면 미리보기 계획이 나온다(그때 '반영하기'를 누름) */
   async function upload(label) {
     const t0 = Date.now();
     await page.setInputFiles("#importFile", FILE);
-    await page.waitForSelector("#importPreview:not([hidden])", { timeout: 120000 });
+    await page.waitForFunction(() => !document.getElementById("importResult").hidden ||
+      (!document.getElementById("importPreview").hidden && !!document.querySelector("#importSummary .plan-box")),
+    null, { timeout: 180000 });
     const parseMs = Date.now() - t0;
+    if (!(await page.isHidden("#importResult"))) {
+      const result = text(await page.textContent("#importResult"));
+      console.log(`\n[${label}] 자동 반영 ${(parseMs / 1000).toFixed(1)}초 — ${result.slice(0, 160)}…`);
+      return { parseMs, saveMs: 0, stats: "", recon: [], issues: [], sheets: [], plan: "", result, auto: true };
+    }
     const stats = text(await page.textContent("#importSummary .import-stats"));
+    const plan = text(await page.textContent("#importSummary .plan-box"));
     const recon = await page.$$eval("#importSummary .recon-head", els => els.map(e => e.textContent.replace(/\s+/g, " ").trim()));
     const issues = await page.$$eval("#importSummary details.issues li", els => els.map(e => e.textContent.trim()));
-    const sheets = await page.$$eval("#importSummary tbody tr", trs => trs.map(tr => tr.textContent.replace(/\s+/g, " ").trim()));
+    const sheets = await page.$$eval("#importSummary .table-wrap:not(.plan-box *) tbody tr", trs => trs.map(tr => tr.textContent.replace(/\s+/g, " ").trim()));
     console.log(`\n[${label}] 분석 ${(parseMs / 1000).toFixed(1)}초 — ${stats}`);
+    console.log(`[${label}] 반영 계획 — ${plan.slice(0, 200)}`);
     if (SHOT) await page.screenshot({ path: `${SHOT}/import_${label}_preview.png`, fullPage: true });
+    if (await page.isDisabled("#importCommit")) {
+      return { parseMs, saveMs: 0, stats, recon, issues, sheets, plan, result: "", auto: false };
+    }
     const t1 = Date.now();
     await page.click("#importCommit");
     await page.waitForSelector("#importResult:not([hidden])", { timeout: 180000 });
     const saveMs = Date.now() - t1;
     const result = text(await page.textContent("#importResult"));
-    console.log(`[${label}] 저장 ${(saveMs / 1000).toFixed(1)}초 — ${result.slice(0, 160)}…`);
+    console.log(`[${label}] 반영 ${(saveMs / 1000).toFixed(1)}초 — ${result.slice(0, 160)}…`);
     if (SHOT) await page.screenshot({ path: `${SHOT}/import_${label}_result.png`, fullPage: true });
-    return { parseMs, saveMs, stats, recon, issues, sheets, result };
+    return { parseMs, saveMs, stats, recon, issues, sheets, plan, result, auto: false };
   }
 
   const first = await upload("1차");
@@ -65,19 +78,28 @@ const text = s => (s || "").replace(/\s+/g, " ").trim();
   if (first.recon.length) check(first.recon.every(r => /모든 달 일치/.test(r)), "엑셀 월별 합계(경영분석)와 읽은 내역 일치");
 
   const second = await upload("2차(재업로드)");
-  check(/매출 0건 등록/.test(second.result) && /지출 0건 등록/.test(second.result), "같은 파일 재업로드 시 새 등록 0건");
+  check(!second.result && /파일의 내역이 이미 모두 들어 있습니다/.test(second.plan), "같은 파일 재업로드 시 반영할 내용 없음");
 
   if (TRUTH) {
-    const r = await page.evaluate(async () => {
+    const r = await page.evaluate(async year => {
       const get = u => fetch(u, { headers: { "X-Requested-With": "XMLHttpRequest" } }).then(x => x.json());
+      const all = `from=${year}-01-01&to=${year}-12-31&group=month`;
+      const mi = (await get(`/api/agg?kind=incomes&${all}`)).rows, me = (await get(`/api/agg?kind=expenses&${all}`)).rows;
+      const months = {};
+      for (const r of mi) months[r.month] = { month: r.month, income: r.amount, income_count: r.cnt, payout: r.payout, expense: 0 };
+      for (const r of me) Object.assign(months[r.month] || (months[r.month] = { month: r.month, income: 0, income_count: 0, payout: 0 }), { expense: r.amount });
       return { inc: await get("/api/incomes?size=1"), exp: await get("/api/expenses?size=1"),
-        months: await get("/api/stats/months"), recv: await get("/api/receivables") };
-    });
+        months: Object.values(months), recv: await get("/api/receivables?summary=1") };
+    }, TRUTH.year);
     check(r.inc.total === TRUTH.sales, `매출 건수 ${r.inc.total} = 정답 ${TRUTH.sales}`);
     check(r.inc.sum.amount === TRUTH.income_total, `매출 합계 ${r.inc.sum.amount} = 정답 ${TRUTH.income_total}`);
     check(r.exp.total === TRUTH.expenses, `지출 건수 ${r.exp.total} = 정답 ${TRUTH.expenses}`);
     check(r.exp.sum.amount === TRUTH.expense_total, `지출 합계 ${r.exp.sum.amount} = 정답 ${TRUTH.expense_total}`);
     check(r.recv.incomes.total === TRUTH.receivable_total, `미수금 합계 ${r.recv.incomes.total} = 정답 ${TRUTH.receivable_total}`);
+    if (TRUTH.payout_total !== undefined) {
+      const payout = r.months.reduce((a, m) => a + (m.payout || 0), 0);
+      check(payout === TRUTH.payout_total, `매출 미지급금(매출차감) 합계 ${payout} = 정답 ${TRUTH.payout_total}`);
+    }
     const bad = r.months.filter(m => {
       const t = TRUTH.months[m.month];
       return !t || t.income !== m.income || t.income_count !== m.income_count || t.expense !== m.expense;

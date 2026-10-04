@@ -200,6 +200,8 @@ def main():
              "income_total": sum(s["amt"] for s in sales), "expense_total": sum(e["amt"] for e in exps),
              "receivable_total": sum(s["recv"] or 0 for s in sales),
              "payable_note_rows": sum(1 for s in sales if s["payable"]),
+             # 매출집계의 '미지급금' = 거래처에 줄 돈(매출차감), 매출액을 넘지 않게 읽힘
+             "payout_total": sum(min(s["payable"] or 0, s["amt"]) for s in sales),
              "months": exp_months}
     with open(a.out.rsplit(".", 1)[0] + ".json", "w", encoding="utf-8") as f:
         json.dump(truth, f, ensure_ascii=False, indent=1)

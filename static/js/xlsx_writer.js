@@ -1,15 +1,18 @@
-/* 데모용 엑셀(.xlsx) 작성기 — 외부 라이브러리 없이 시트 XML을 만들고 무압축 ZIP으로 묶는다.
-   실제 시스템은 서버의 exporter.py(openpyxl)가 같은 모양의 파일을 만든다.
+/* 엑셀(.xlsx) 작성기 — 외부 라이브러리 없이 시트 XML을 만들고 무압축 ZIP으로 묶는다.
+   화면에서 만드는 파일(분석 집계표)과 데모(서버 없이 만드는 내보내기·입력 양식)가 쓴다.
+   서버의 내보내기·입력 양식은 exporter.py(openpyxl)가 만든다.
 
    WellcarXlsxWriter.build([{ name, widths: [..], freeze: "B2", autoFilter: true,
-                               rows: [[cell, ...], ...] }]) → Blob
+                               rows: [[cell, ...], ...],
+                               validations: [{ sqref: "B2:B1001", list: "'코드목록'!$A$2:$A$9" }] }]) → Blob
    cell: null | { v, t: "s"|"n"|"d", s: 스타일 번호 } (문자열·숫자만 줘도 됨)
-   문자열은 모두 inlineStr로 쓰므로 '='로 시작해도 수식으로 실행되지 않는다. */
+   문자열은 모두 inlineStr로 쓰므로 '='로 시작해도 수식으로 실행되지 않는다.
+   validations: 드롭다운(목록) — 목록 밖 값도 입력할 수 있게 오류 창은 띄우지 않는다. */
 (function () {
   "use strict";
 
   // 스타일 번호 (styles.xml의 cellXfs 순서)
-  const S = { plain: 0, head: 1, won: 2, date: 3, dec: 4, bold: 5, title: 6, muted: 7, totalNum: 8, totalLabel: 9 };
+  const S = { plain: 0, head: 1, won: 2, date: 3, dec: 4, bold: 5, title: 6, muted: 7, totalNum: 8, totalLabel: 9, pct: 10, totalPct: 11 };
 
   const enc = new TextEncoder();
   const xmlEsc = s => String(s)
@@ -49,7 +52,7 @@
     let pane = "";
     if (sh.freeze) {
       const m = /^([A-Z]+)(\d+)$/.exec(sh.freeze);
-      const xs = m ? m[1].charCodeAt(0) - 65 : 0, ys = m ? +m[2] - 1 : 0;
+      const xs = m ? [...m[1]].reduce((a, ch) => a * 26 + ch.charCodeAt(0) - 64, 0) - 1 : 0, ys = m ? +m[2] - 1 : 0;
       const active = xs && ys ? "bottomRight" : ys ? "bottomLeft" : "topRight";
       pane = `<pane${xs ? ` xSplit="${xs}"` : ""}${ys ? ` ySplit="${ys}"` : ""} topLeftCell="${sh.freeze}" activePane="${active}" state="frozen"/>`;
     }
@@ -60,21 +63,26 @@
       return `<row r="${ri + 1}">${cells}</row>`;
     }).join("");
     const filter = sh.autoFilter && rows.length ? `<autoFilter ref="A1:${colName(ncol - 1)}${rows.length}"/>` : "";
+    const dv = (sh.validations || []).length
+      ? `<dataValidations count="${sh.validations.length}">` + sh.validations.map(v =>
+        `<dataValidation type="list" allowBlank="1" showErrorMessage="0" sqref="${xmlEsc(v.sqref)}">` +
+        `<formula1>${xmlEsc(v.list)}</formula1></dataValidation>`).join("") + `</dataValidations>`
+      : "";
     return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
       `<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
       `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
-      `<sheetViews><sheetView workbookViewId="0">${pane}</sheetView></sheetViews>` +
-      (cols ? `<cols>${cols}</cols>` : "") + `<sheetData>${body}</sheetData>${filter}</worksheet>`;
+      `<sheetViews><sheetView workbookViewId="0"${sh.selected ? ' tabSelected="1"' : ""}>${pane}</sheetView></sheetViews>` +
+      (cols ? `<cols>${cols}</cols>` : "") + `<sheetData>${body}</sheetData>${filter}${dv}</worksheet>`;
   }
 
   const STYLES = `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
 <styleSheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
-<numFmts count="3"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd"/><numFmt numFmtId="166" formatCode="#,##0.00"/></numFmts>
+<numFmts count="4"><numFmt numFmtId="164" formatCode="#,##0"/><numFmt numFmtId="165" formatCode="yyyy-mm-dd"/><numFmt numFmtId="166" formatCode="#,##0.00"/><numFmt numFmtId="167" formatCode="0.0%"/></numFmts>
 <fonts count="5"><font><sz val="11"/><name val="맑은 고딕"/></font><font><b/><sz val="11"/><color rgb="FFFFFFFF"/><name val="맑은 고딕"/></font><font><b/><sz val="11"/><name val="맑은 고딕"/></font><font><b/><sz val="14"/><name val="맑은 고딕"/></font><font><sz val="11"/><color rgb="FF5B6675"/><name val="맑은 고딕"/></font></fonts>
 <fills count="4"><fill><patternFill patternType="none"/></fill><fill><patternFill patternType="gray125"/></fill><fill><patternFill patternType="solid"><fgColor rgb="FF2A78D6"/><bgColor indexed="64"/></patternFill></fill><fill><patternFill patternType="solid"><fgColor rgb="FFEEF1F6"/><bgColor indexed="64"/></patternFill></fill></fills>
 <borders count="1"><border><left/><right/><top/><bottom/><diagonal/></border></borders>
 <cellStyleXfs count="1"><xf numFmtId="0" fontId="0" fillId="0" borderId="0"/></cellStyleXfs>
-<cellXfs count="10">
+<cellXfs count="12">
 <xf numFmtId="0" fontId="0" fillId="0" borderId="0" xfId="0"/>
 <xf numFmtId="0" fontId="1" fillId="2" borderId="0" xfId="0" applyFont="1" applyFill="1" applyAlignment="1"><alignment horizontal="center" vertical="center" wrapText="1"/></xf>
 <xf numFmtId="164" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
@@ -85,6 +93,8 @@
 <xf numFmtId="0" fontId="4" fillId="0" borderId="0" xfId="0" applyFont="1"/>
 <xf numFmtId="164" fontId="2" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>
 <xf numFmtId="0" fontId="2" fillId="3" borderId="0" xfId="0" applyFont="1" applyFill="1"/>
+<xf numFmtId="167" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>
+<xf numFmtId="167" fontId="2" fillId="3" borderId="0" xfId="0" applyNumberFormat="1" applyFont="1" applyFill="1"/>
 </cellXfs>
 <cellStyles count="1"><cellStyle name="Normal" xfId="0" builtinId="0"/></cellStyles>
 </styleSheet>`;
@@ -162,7 +172,8 @@
       `</Relationships>`);
     add("xl/workbook.xml", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +
       `<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" ` +
-      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships"><sheets>` +
+      `xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">` +
+      `<bookViews><workbookView activeTab="${Math.max(0, sheets.findIndex(sh => sh.selected))}"/></bookViews><sheets>` +
       sheets.map((sh, i) => `<sheet name="${xmlEsc(sh.name)}" sheetId="${i + 1}" r:id="rId${i + 1}"/>`).join("") +
       `</sheets></workbook>`);
     add("xl/_rels/workbook.xml.rels", `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>` +

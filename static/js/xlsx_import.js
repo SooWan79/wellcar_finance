@@ -1,8 +1,11 @@
 /* 엑셀(.xlsx/.xlsm) 브라우저 파서 — 외부 라이브러리 없이 ZIP + 시트 XML을 직접 해석.
    - 내역 시트: '영업일자'와 함께 '매출액'+'매출유형' 또는 '지출금액'+'지출유형' 열이 있는 시트
-     (원본 경영관리 엑셀의 매출집계·지출집계와 월별 시트, 이 시스템이 내보낸 매출내역·지출내역)
+     (원본 경영관리 엑셀의 매출집계·지출집계와 월별 시트, 이 시스템의 입력 양식(매출입력·지출입력)과
+      내보낸 매출내역·지출내역)
    - 월별 합계 시트: '영업월'·'매출액'·'지출액' 열이 있는 시트(원본의 'OOOO년 경영분석')는
-     엑셀이 직접 계산한 월 합계라서, 읽어 낸 내역과 맞는지 대조하는 데 쓴다. */
+     엑셀이 직접 계산한 월 합계라서, 읽어 낸 내역과 맞는지 대조하는 데 쓴다.
+   - 이 시스템이 내보낸 파일은 '요약' 시트의 '시스템 식별자'·'내보낸 시각'과 '관리번호' 열로
+     엑셀에서 고친 줄을 원래 내역에 반영한다. */
 (function () {
   "use strict";
 
@@ -160,18 +163,35 @@
     unit_price: ["단가"],
   };
   const INCOME_HEADERS = Object.assign({
-    trx_date: ["영업일자"], income_type: ["매출유형"], category: ["매출구분"],
-    manufacturer: ["차량제조사"], product_model: ["제품모델"], client: ["거래처명", "거래처"],
+    trx_date: ["영업일자"], income_type: ["매출유형"], category: ["매출구분", "서비스구분"],
+    manufacturer: ["브랜드", "차량제조사", "제조사"], car_model: ["차종"],
+    product_model: ["제품모델"], client: ["거래처명", "거래처"],
     amount: ["매출액"], cash: ["현금매출액"], card: ["카드매출액"], vat: ["부가세"],
     net_amount: ["순매출액"], account: ["계좌"], payment_type: ["결제유형"],
     tax_invoice: ["세금계산서발행유무", "세금계산서"], memo: ["적요"],
-    receivable: ["미수금"], payable_note: ["미지급금"],
+    receivable: ["미수금"],
+    // 미지급금: 이 매출에서 거래처에 줄 돈(매출에서 차감). 잔액 또는 지급완료(Y/N)로 지급 여부를 읽는다
+    payout: ["미지급금", "거래처지급액"], payout_due: ["미지급잔액", "미지급금잔액"],
+    payout_done: ["미지급금지급완료", "지급완료"], id: ["관리번호"],
   }, COMMON);
   const EXPENSE_HEADERS = Object.assign({
     trx_date: ["영업일자"], expense_type: ["지출유형"], item: ["거래품목"],
     payment_type: ["결제유형"], client: ["거래처명", "거래처"], amount: ["지출금액"],
-    memo: ["적요"], payable: ["미지급금"],
+    memo: ["적요"], payable: ["미지급금"], id: ["관리번호"],
   }, COMMON);
+  // 관리번호로 기존 내역을 고칠 때 파일에 없는 열은 건드리지 않도록, 저장 항목 ← 원본 열
+  const INCOME_SOURCE = {
+    category: ["category"], manufacturer: ["manufacturer"], car_model: ["car_model"], product_model: ["product_model"],
+    client: ["client"], currency: ["currency"], exchange_rate: ["exchange_rate", "currency"],
+    quantity: ["quantity"], unit_price: ["unit_price"], vat: ["vat"], net_amount: ["net_amount", "vat"],
+    account: ["account"], payment_type: ["payment_type", "card", "cash"], tax_invoice: ["tax_invoice"],
+    memo: ["memo"], receivable: ["receivable"], payout: ["payout"], payout_due: ["payout_due", "payout_done", "payout"],
+  };
+  const EXPENSE_SOURCE = {
+    item: ["item"], payment_type: ["payment_type"], client: ["client"], currency: ["currency"],
+    exchange_rate: ["exchange_rate", "currency"], quantity: ["quantity"], unit_price: ["unit_price"],
+    memo: ["memo"], payable: ["payable"],
+  };
 
   const norm = s => String(s).replace(/\s+/g, "");
 
@@ -219,6 +239,8 @@
 
     const records = [];
     let skipped = 0;
+    const absentFor = src => Object.keys(src).filter(f => !src[f].some(c => cols[c]));
+    const absent = absentFor(isIncome ? INCOME_SOURCE : EXPENSE_SOURCE);
     for (const r of rows) {
       if (r.rowNum <= h.headerRow) continue;
       const cell = f => cols[f] ? r.cells[cols[f]] : undefined;
@@ -244,11 +266,13 @@
       const currency = normCurrency(cell("currency"));
       const qty = num(cell("quantity")) || 1;
       let rate = num(cell("exchange_rate"));
-      let unit = num(cell("unit_price"));
+      const rawUnit = cell("unit_price");
+      let unit = num(rawUnit);
       if (currency !== "KRW" && !rate && !unit)
         note(r.rowNum, `${currency} 거래인데 환율·단가가 없어 원화 금액만 저장`);
       if (!rate) rate = currency === "KRW" ? 1 : (unit ? amount / (qty * unit) : 1);
-      if (!unit) unit = amount / qty / (currency === "KRW" ? 1 : rate);
+      // 단가 칸이 비었을 때만 금액에서 계산한다 (0이라고 적힌 단가는 그대로 — 내보낸 파일 왕복)
+      if (!unit && rawUnit === undefined) unit = amount / qty / (currency === "KRW" ? 1 : rate);
       unit = Math.round(unit * 100) / 100;
       rate = Math.round(rate * 10000) / 10000;
       if (currency !== "KRW" && Math.abs(qty * unit * rate - amount) > 1)
@@ -258,46 +282,76 @@
         unit_price: unit, amount, payment_type: txt(cell("payment_type")), src,
       };
 
+      let rec;
       if (isIncome) {
-        const vat = Math.round(num(cell("vat")));
         if (!common.payment_type) {
           if (num(cell("card")) > 0) common.payment_type = "카드";
           else if (num(cell("cash")) > 0) common.payment_type = "현금";
         }
-        let memo = txt(cell("memo"));
-        // 원본 매출집계에만 있는 '미지급금' 열은 담을 곳이 없어 적요에 남긴다
-        const payNote = cell("payable_note");
-        if (payNote !== undefined && txt(payNote) && !/^(N|NO|0|-)$/i.test(txt(payNote))) {
-          const n = num(payNote);
-          memo = (memo ? memo + " " : "") + (n ? `[미지급금 ${fmtNum(n)}원]` : `[미지급금 ${txt(payNote)}]`);
-          note(r.rowNum, "매출 행의 미지급금 값을 적요에 기록");
-        }
+        const taxInvoice = isYes(cell("tax_invoice")) ? "Y" : "N";
+        // 부가세 칸이 없거나 비어 있으면 업무 규칙대로 계산: 카드이거나 세금계산서 Y면 매출액 × 10/110
+        const rawVat = cell("vat");
+        const vat = rawVat === undefined
+          ? (common.payment_type === "카드" || taxInvoice === "Y" ? Math.round(amount * 10 / 110) : 0)
+          : Math.round(num(rawVat));
         let incomeType = txt(cell("income_type"));
         if (!incomeType) { incomeType = "기타"; note(r.rowNum, "매출유형이 비어 있어 '기타'로 등록"); }
-        records.push(Object.assign(common, {
+        const rawPayout = cell("payout");
+        const payout = balance(rawPayout, amount);
+        if (rawPayout !== undefined && typeof rawPayout !== "number" && payout === Math.max(amount, 0) && amount > 0)
+          note(r.rowNum, `미지급금이 금액이 아니라 '${txt(rawPayout).slice(0, 10)}'로 되어 있어 매출액 전액으로 봄`);
+        let payoutDue = payout;
+        if (cell("payout_due") !== undefined) payoutDue = Math.min(Math.max(Math.round(num(cell("payout_due"))), 0), payout);
+        else if (isYes(cell("payout_done"))) payoutDue = 0;
+        rec = Object.assign(common, {
           income_type: incomeType,
           category: txt(cell("category")),
           manufacturer: txt(cell("manufacturer")),
+          car_model: txt(cell("car_model")),
           product_model: txt(cell("product_model")),
           vat,
           net_amount: Math.round(num(cell("net_amount"))) || (amount - vat),
           account: txt(cell("account")),
-          tax_invoice: isYes(cell("tax_invoice")) ? "Y" : "N",
-          memo,
+          tax_invoice: taxInvoice,
+          memo: txt(cell("memo")),
           receivable: balance(cell("receivable"), amount),
-        }));
+          payout,
+          payout_due: payoutDue,
+        });
       } else {
         let expenseType = txt(cell("expense_type"));
         if (!expenseType) { expenseType = "기타"; note(r.rowNum, "지출유형이 비어 있어 '기타'로 등록"); }
-        records.push(Object.assign(common, {
+        rec = Object.assign(common, {
           expense_type: expenseType,
           item: txt(cell("item")),
           memo: txt(cell("memo")),
           payable: balance(cell("payable"), amount),
-        }));
+        });
       }
+      // 관리번호(이 시스템에서 내보낸 파일): 고칠 때 파일에 없는 열은 그대로 두도록 표시
+      const id = cell("id");
+      if (typeof id === "number" && Number.isInteger(id) && id > 0) {
+        rec.id = id;
+        if (absent.length) rec._absent = absent;
+      }
+      records.push(rec);
     }
     return { kind, records, skipped, headerRow: h.headerRow };
+  }
+
+  /** 내보낸 파일의 '시스템 식별자'·'내보낸 시각' (이름 칸 오른쪽 칸의 값) */
+  function extractMeta(rows) {
+    const meta = {};
+    for (const r of rows) {
+      if (r.rowNum > 40) break;
+      const vals = Object.values(r.cells);
+      for (let i = 0; i + 1 < vals.length; i++) {
+        const label = typeof vals[i] === "string" ? norm(vals[i]) : "";
+        if (label === "시스템식별자") meta.instance = txt(vals[i + 1]);
+        if (label === "내보낸시각") meta.exported_at = txt(vals[i + 1]);
+      }
+    }
+    return meta.instance ? meta : null;
   }
 
   /** '영업월'·'매출액'·'지출액' 표에서 월별 합계를 읽는다 (원본 'OOOO년 경영분석' 시트). */
@@ -321,7 +375,8 @@
 
   /**
    * 파일 하나를 분석한다.
-   * 반환: { file, sheets: [{id, file, name, kind, records, skipped}], summaries: [...], issues: [...] }
+   * 반환: { file, sheets: [{id, file, name, kind, records, skipped}], summaries: [...], issues: [...],
+   *        meta: {instance, exported_at} | null }
    */
   async function parse(file) {
     const buf = new Uint8Array(await file.arrayBuffer());
@@ -350,7 +405,7 @@
       for (const si of parseXml(sstBytes).getElementsByTagName("si")) sst.push(textOf(si));
     }
 
-    const result = { file: file.name, sheets: [], summaries: [], issues: [] };
+    const result = { file: file.name, sheets: [], summaries: [], issues: [], meta: null };
     for (const sheetEl of wb.getElementsByTagName("sheet")) {
       const name = sheetEl.getAttribute("name");
       const rid = sheetEl.getAttribute("r:id") || sheetEl.getAttributeNS(
@@ -372,6 +427,7 @@
       }
       const mo = extractMonthly(name, rows);
       if (mo) result.summaries.push(Object.assign({ file: file.name }, mo));
+      if (!result.meta) result.meta = extractMeta(rows);
     }
     return result;
   }

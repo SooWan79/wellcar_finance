@@ -77,12 +77,15 @@ DEMO_CSS = """
 .demo-accounts-row { display: flex; flex-wrap: wrap; gap: 6px; }
 """
 
+# mock_api.js가 xlsx_writer.js(XlsxWriter)를 쓰므로 그 뒤에, 화면 스크립트보다 앞에 둔다
 SCRIPTS = [
-    ("demo", "xlsx_writer.js"),
+    ("static", "js", "xlsx_writer.js"),
     ("demo", "mock_api.js"),
     ("demo", "demo_shell.js"),
     ("static", "js", "xlsx_import.js"),
+    ("static", "js", "metrics.js"),
     ("static", "js", "charts.js"),
+    ("static", "js", "reports.js"),
     ("static", "js", "app.js"),
 ]
 

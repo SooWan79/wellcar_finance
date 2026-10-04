@@ -1,6 +1,7 @@
 """웰카오디오 매출/지출관리 시스템 - Flask 백엔드"""
 import hmac
 import math
+import mimetypes
 import os
 import re
 import secrets
@@ -31,6 +32,7 @@ def _env_flag(name):
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+mimetypes.add_type("application/manifest+json", ".webmanifest")  # 휴대폰 '홈 화면에 추가'
 app = Flask(__name__, static_folder="static", static_url_path="")
 app.config.update(
     SESSION_COOKIE_NAME="wellcar_session",
@@ -127,6 +129,12 @@ CREATE TABLE IF NOT EXISTS settings (
     key TEXT PRIMARY KEY,
     value TEXT NOT NULL DEFAULT ''
 );
+CREATE TABLE IF NOT EXISTS targets (
+    month TEXT NOT NULL,          -- 'YYYY-MM'
+    metric TEXT NOT NULL,         -- sales(매출 목표) / profit(영업이익 목표) / expense(지출 예산)
+    value INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (month, metric)
+);
 CREATE INDEX IF NOT EXISTS idx_incomes_date ON incomes(trx_date);
 CREATE INDEX IF NOT EXISTS idx_expenses_date ON expenses(trx_date);
 """
@@ -139,12 +147,19 @@ COLUMN_MIGRATIONS = {
         ("created_by", "TEXT DEFAULT ''"),
         ("updated_by", "TEXT DEFAULT ''"),
         ("updated_at", "TEXT DEFAULT ''"),
+        ("car_model", "TEXT DEFAULT ''"),              # 차종
+        ("payout", "INTEGER NOT NULL DEFAULT 0"),      # 미지급금: 이 매출에서 거래처에 줄 돈(매출에서 차감)
+        ("payout_due", "INTEGER NOT NULL DEFAULT 0"),  # 그중 아직 거래처에 지급하지 않은 금액
+        ("source", "TEXT DEFAULT ''"),                 # 'excel' = 엑셀 업로드로 들어온 내역
+        ("import_key", "TEXT DEFAULT ''"),             # 엑셀에서 들어올 때의 중복 판정 키
     ],
     "expenses": [
         ("payable", "INTEGER NOT NULL DEFAULT 0"),  # 미지급금 (아직 지급하지 않은 금액)
         ("created_by", "TEXT DEFAULT ''"),
         ("updated_by", "TEXT DEFAULT ''"),
         ("updated_at", "TEXT DEFAULT ''"),
+        ("source", "TEXT DEFAULT ''"),
+        ("import_key", "TEXT DEFAULT ''"),
     ],
 }
 
@@ -177,12 +192,65 @@ SEED_CODES = {
     "currency": ["KRW", "CNY"],
     "manufacturer": ["벤츠", "BMW", "아우디", "폭스바겐", "볼보", "닛산", "토요타",
                      "현대", "르노", "레인지로버", "N/A"],
+    # 차종: 브랜드(차량제조사)별 기본 목록. 매출 화면에서는 고르거나 직접 입력한다.
+    "car_model": {
+        "벤츠": ["A클래스", "C클래스", "E클래스", "S클래스", "CLS", "GLA", "GLC", "GLE", "GLS"],
+        "BMW": ["1시리즈", "3시리즈", "5시리즈", "7시리즈", "X1", "X3", "X5", "X6", "X7"],
+        "아우디": ["A3", "A4", "A6", "A7", "A8", "Q3", "Q5", "Q7"],
+        "폭스바겐": ["골프", "제타", "파사트", "티구안", "투아렉"],
+        "볼보": ["S60", "S90", "XC40", "XC60", "XC90"],
+        "닛산": ["알티마", "맥시마", "무라노", "패스파인더"],
+        "토요타": ["캠리", "프리우스", "라브4", "시에나"],
+        "현대": ["아반떼", "쏘나타", "그랜저", "제네시스", "투싼", "싼타페", "팰리세이드"],
+        "르노": ["SM6", "QM6", "XM3"],
+        "레인지로버": ["레인지로버", "레인지로버 스포츠", "벨라", "이보크", "디스커버리"],
+    },
     "client": ["개인", "방문", "해덕", "동서카오디오(대구)", "재즈카오디오(광주)",
                "재즈카오디오(대구)", "현대카오디오(서울)", "수원테크(수원)",
                "닥터카오디오(수원)", "써브카오디오(안산)", "오토사운드(논산)",
                "주문진카오디오(주문진)", "창원카오디오(창원)", "슈퍼그립",
                "미스터짱카", "11번가", "옥션", "G마켓"],
 }
+
+
+def _seed_code_groups(db):
+    """기본 코드를 넣는다. 그룹마다 한 번만 넣고(settings에 표시), 이미 코드가 있는 그룹은 건드리지 않는다.
+    나중에 생긴 그룹(예: 차종)도 기존 DB에 한 번 채워지고, 사용자가 모두 지운 그룹이 되살아나지 않는다."""
+    for group, values in SEED_CODES.items():
+        flag = f"seeded:{group}"
+        if get_setting(db, flag):
+            continue
+        if not db.execute("SELECT 1 FROM codes WHERE code_group=? LIMIT 1", (group,)).fetchone():
+            pairs = ([(v, parent) for parent, children in values.items() for v in children]
+                     if isinstance(values, dict) else [(v, "") for v in values])
+            order = {}
+            for v, parent in pairs:
+                i = order.get(parent, 0)
+                order[parent] = i + 1
+                db.execute("INSERT OR IGNORE INTO codes(code_group, code_value, parent_value, sort_order)"
+                           " VALUES (?,?,?,?)", (group, v, parent, i))
+        db.execute("INSERT OR REPLACE INTO settings(key, value) VALUES (?, '1')", (flag,))
+
+
+_PAYOUT_NOTE_RE = re.compile(r"\s*\[미지급금 ([0-9,]+)원\]$")
+
+
+def _data_migrations(db):
+    """예전 데이터를 새 열로 옮긴다(여러 번 실행해도 결과가 같음). DB를 열 때와 백업 복원 뒤에 실행."""
+    # 1) 예전 엑셀 가져오기가 적요 끝에 남긴 '[미지급금 N원]' → 미지급금(매출차감) 열
+    for r in db.execute("SELECT id, memo, amount FROM incomes "
+                        "WHERE payout = 0 AND memo LIKE '%[미지급금 %원]'").fetchall():
+        m = _PAYOUT_NOTE_RE.search(r["memo"] or "")
+        if not m:
+            continue
+        n = min(int(m.group(1).replace(",", "")), max(r["amount"], 0))
+        db.execute("UPDATE incomes SET payout=?, payout_due=?, memo=? WHERE id=?",
+                   (n, n, r["memo"][:m.start()].rstrip(), r["id"]))
+    # 2) 엑셀로 들어온 내역 표시: 엑셀 장부와 맞추기·중복 판정에 쓴다
+    for table in ("incomes", "expenses"):
+        for r in db.execute(f"SELECT * FROM {table} WHERE source = '' AND created_by LIKE '%(엑셀)'").fetchall():
+            db.execute(f"UPDATE {table} SET source='excel', import_key=? WHERE id=?",
+                       (_key_str(_dedupe_key(r, IMPORT_KEYS[table])), r["id"]))
 
 
 def _migrate_columns(db):
@@ -205,22 +273,13 @@ def get_setting(db, key, default=None):
 def init_db():
     os.makedirs(DATA_DIR, exist_ok=True)
     db = sqlite3.connect(DB_PATH, timeout=15)
+    db.row_factory = sqlite3.Row
     db.executescript(SCHEMA)
     _migrate_columns(db)
-    cur = db.execute("SELECT COUNT(*) FROM codes")
-    if cur.fetchone()[0] == 0:
-        for group, values in SEED_CODES.items():
-            if isinstance(values, dict):
-                for parent, children in values.items():
-                    for i, v in enumerate(children):
-                        db.execute(
-                            "INSERT OR IGNORE INTO codes(code_group, code_value, parent_value, sort_order)"
-                            " VALUES (?,?,?,?)", (group, v, parent, i))
-            else:
-                for i, v in enumerate(values):
-                    db.execute(
-                        "INSERT OR IGNORE INTO codes(code_group, code_value, parent_value, sort_order)"
-                        " VALUES (?,?,'',?)", (group, v, i))
+    _seed_code_groups(db)
+    _data_migrations(db)
+    # 이 DB의 식별자: 내보낸 엑셀을 다시 올릴 때 '관리번호'가 이 DB의 번호인지 확인하는 데 쓴다
+    db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('instance_id', ?)", (secrets.token_hex(6),))
     if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
         if not _bootstrap_admin_from_env(db):
             _announce_setup_code(db)
@@ -656,21 +715,24 @@ def maybe_auto_backup():
 # ---------------------------------------------------------------- utilities
 WEEKDAYS = ["월", "화", "수", "목", "금", "토", "일"]
 
-INCOME_FIELDS = ["trx_date", "income_type", "category", "manufacturer", "product_model",
+INCOME_FIELDS = ["trx_date", "income_type", "category", "manufacturer", "car_model", "product_model",
                  "client", "currency", "exchange_rate", "quantity", "unit_price",
                  "amount", "vat", "net_amount", "account", "payment_type",
-                 "tax_invoice", "memo", "receivable"]
+                 "tax_invoice", "memo", "receivable", "payout", "payout_due"]
 EXPENSE_FIELDS = ["trx_date", "expense_type", "item", "payment_type", "client",
                   "currency", "exchange_rate", "quantity", "unit_price", "amount", "memo",
                   "payable"]
 NUMERIC_FIELDS = ("exchange_rate", "quantity", "unit_price", "amount", "vat", "net_amount",
-                  "receivable", "payable")
-INTEGER_FIELDS = ("amount", "vat", "net_amount", "receivable", "payable")
+                  "receivable", "payable", "payout", "payout_due")
+INTEGER_FIELDS = ("amount", "vat", "net_amount", "receivable", "payable", "payout", "payout_due")
 TYPE_FIELD = {"incomes": "income_type", "expenses": "expense_type"}
 BALANCE_FIELD = {"incomes": "receivable", "expenses": "payable"}
 BALANCE_LABEL = {"incomes": "미수금", "expenses": "미지급금"}
+# '완료' 처리로 0이 되는 잔액 열. 매출의 payout_due는 거래처에 줄 미지급금 중 아직 안 준 금액
+SETTLE_FIELDS = {"incomes": ("receivable", "payout_due"), "expenses": ("payable",)}
 SEARCH_FIELDS = {
-    "incomes": ("client", "memo", "product_model", "category", "manufacturer", "income_type", "account"),
+    "incomes": ("client", "memo", "product_model", "category", "manufacturer", "car_model",
+                "income_type", "account"),
     "expenses": ("client", "memo", "item", "expense_type"),
 }
 MAX_NUMBER = 10 ** 13  # 10조 원: SQLite 정수 범위 안에서 넉넉한 상한
@@ -681,8 +743,14 @@ def round_half_up(v):
     return int(math.floor(float(v) + 0.5))
 
 
-FIELD_LABELS = {"trx_date": "영업일자", "income_type": "매출유형", "expense_type": "지출유형",
-                "amount": "금액"}
+FIELD_LABELS = {
+    "trx_date": "영업일자", "income_type": "매출유형", "expense_type": "지출유형", "amount": "금액",
+    "category": "매출구분", "manufacturer": "브랜드", "car_model": "차종", "product_model": "제품모델",
+    "client": "거래처", "currency": "거래통화", "exchange_rate": "기준환율", "quantity": "수량",
+    "unit_price": "단가", "vat": "부가세", "net_amount": "순매출액", "account": "계좌",
+    "payment_type": "결제유형", "tax_invoice": "세금계산서", "memo": "적요", "receivable": "미수금",
+    "payout": "미지급금", "payout_due": "미지급 잔액", "item": "거래품목", "payable": "미지급금",
+}
 TABLE_SPEC = {
     "incomes": (INCOME_FIELDS, ["trx_date", "income_type", "amount"]),
     "expenses": (EXPENSE_FIELDS, ["trx_date", "expense_type", "amount"]),
@@ -718,11 +786,11 @@ def _clean_entry(raw, fields, required, table, clamp_balance=False):
             try:
                 v = float(data[f])
             except (TypeError, ValueError):
-                return None, f"'{f}' 값이 숫자가 아닙니다."
+                return None, f"{FIELD_LABELS.get(f, f)} 값이 숫자가 아닙니다."
             if not math.isfinite(v):
-                return None, f"'{f}' 값이 숫자가 아닙니다."
+                return None, f"{FIELD_LABELS.get(f, f)} 값이 숫자가 아닙니다."
             if abs(v) > MAX_NUMBER:
-                return None, f"'{f}' 값이 너무 큽니다."
+                return None, f"{FIELD_LABELS.get(f, f)} 값이 너무 큽니다."
             data[f] = round_half_up(v) if f in INTEGER_FIELDS else v
     for f in required:
         if f in NUMERIC_FIELDS and not data.get(f):
@@ -735,13 +803,27 @@ def _clean_entry(raw, fields, required, table, clamp_balance=False):
     if "currency" in data:
         data["currency"] = data["currency"].upper() or "KRW"
     bal = BALANCE_FIELD[table]
+    cap = max(data.get("amount", 0), 0)
     if bal in data and clamp_balance:
-        data[bal] = min(max(data[bal], 0), max(data.get("amount", 0), 0))
+        data[bal] = min(max(data[bal], 0), cap)
     if bal in data:
         if data[bal] < 0:
             return None, f"{BALANCE_LABEL[table]}은 0 이상이어야 합니다."
-        if data[bal] > max(data.get("amount", 0), 0):
+        if data[bal] > cap:
             return None, f"{BALANCE_LABEL[table]}은 금액보다 클 수 없습니다."
+    if table == "incomes":
+        # 미지급금(거래처에 줄 돈)만 오면 아직 지급하지 않은 것으로 본다
+        if "payout" in data and "payout_due" not in data:
+            data["payout_due"] = data["payout"]
+        if clamp_balance:
+            if "payout" in data:
+                data["payout"] = min(max(data["payout"], 0), cap)
+            if "payout_due" in data:
+                data["payout_due"] = min(max(data["payout_due"], 0), data.get("payout", cap))
+        if "payout" in data and not 0 <= data["payout"] <= cap:
+            return None, "미지급금은 0원부터 매출액까지 입력할 수 있습니다."
+        if "payout_due" in data and not 0 <= data["payout_due"] <= data.get("payout", cap):
+            return None, "미지급 잔액은 0원부터 미지급금까지만 될 수 있습니다."
     return data, None
 
 
@@ -788,7 +870,7 @@ def _list_entries(table):
     size = _int_arg("size", 50, 1, 1000)
     page = _int_arg("page", 1, 1, 10 ** 6)
     db = get_db()
-    vat = ", COALESCE(SUM(vat),0) AS vat" if table == "incomes" else ""
+    vat = ", COALESCE(SUM(vat),0) AS vat, COALESCE(SUM(payout),0) AS payout" if table == "incomes" else ""
     agg = db.execute(
         f"SELECT COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount, "
         f"COALESCE(SUM({BALANCE_FIELD[table]}),0) AS balance{vat} FROM {table}{where}", params).fetchone()
@@ -801,6 +883,7 @@ def _list_entries(table):
     sums = {"amount": agg["amount"], "balance": agg["balance"]}
     if table == "incomes":
         sums["vat"] = agg["vat"]
+        sums["payout"] = agg["payout"]
     return jsonify({"items": [row_to_dict(r) for r in rows], "total": total, "page": page,
                     "size": size, "pages": pages, "sum": sums})
 
@@ -814,10 +897,19 @@ def _get_entry(table, rid):
 
 def _save_entry(table, rid=None):
     fields, required = TABLE_SPEC[table]
-    data, err = _clean_entry(json_body(), fields, required, table)
+    db = get_db()
+    raw = json_body()
+    if rid is not None:
+        # 일부 항목만 보낸 수정도 저장된 값과 합쳐서 검사한다(예: 미수금이 금액을 넘지 않는지)
+        row = db.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()
+        if not row:
+            return jsonify({"error": "해당 내역이 없습니다."}), 404
+        merged = {f: row[f] for f in fields}
+        merged.update({k: v for k, v in raw.items() if k in fields})
+        raw = merged
+    data, err = _clean_entry(raw, fields, required, table)
     if err:
         return jsonify({"error": err}), 400
-    db = get_db()
     who = user_label(current_user())
     if rid is None:
         data["created_by"] = who
@@ -848,16 +940,48 @@ def _delete_entry(table, rid):
     return jsonify({"ok": True})
 
 
+def _settle_field(table, body):
+    field = body.get("field") or BALANCE_FIELD[table]
+    return field if field in SETTLE_FIELDS[table] else None
+
+
 def _settle_entry(table, rid):
-    """미수금(미지급금)을 0으로 정리 (입금·지급 완료 처리)."""
+    """미수금·미지급금을 0으로 정리 (입금·지급 완료 처리).
+    본문 {"field": "payout_due"}이면 매출의 거래처 미지급금을 지급 완료로 바꾼다(매출차감 금액은 그대로)."""
+    field = _settle_field(table, json_body())
+    if not field:
+        return jsonify({"error": "정리할 항목이 올바르지 않습니다."}), 400
     db = get_db()
     cur = db.execute(
-        f"UPDATE {table} SET {BALANCE_FIELD[table]}=0, updated_by=?, updated_at=? WHERE id=?",
+        f"UPDATE {table} SET {field}=0, updated_by=?, updated_at=? WHERE id=?",
         (user_label(current_user()), datetime.now().strftime("%Y-%m-%d %H:%M:%S"), rid))
     db.commit()
     if cur.rowcount == 0:
         return jsonify({"error": "해당 내역이 없습니다."}), 404
     return jsonify(row_to_dict(db.execute(f"SELECT * FROM {table} WHERE id=?", (rid,)).fetchone()))
+
+
+@app.route("/api/settle-bulk", methods=["POST"])
+def settle_bulk():
+    """여러 건을 한 번에 입금·지급 완료로 정리. 본문 {table, field, ids: [...]}"""
+    body = json_body()
+    table = body.get("table")
+    if table not in SETTLE_FIELDS:
+        return jsonify({"error": "table은 incomes 또는 expenses여야 합니다."}), 400
+    field = _settle_field(table, body)
+    ids = body.get("ids")
+    if not field:
+        return jsonify({"error": "정리할 항목이 올바르지 않습니다."}), 400
+    if (not isinstance(ids, list) or not 1 <= len(ids) <= 1000
+            or not all(isinstance(i, int) and not isinstance(i, bool) and 0 < i < 2 ** 63 for i in ids)):
+        return jsonify({"error": "ids는 1~1000개의 내역 번호 목록이어야 합니다."}), 400
+    db = get_db()
+    marks = ",".join("?" * len(ids))
+    cur = db.execute(
+        f"UPDATE {table} SET {field}=0, updated_by=?, updated_at=? WHERE {field} > 0 AND id IN ({marks})",
+        [user_label(current_user()), datetime.now().strftime("%Y-%m-%d %H:%M:%S")] + ids)
+    db.commit()
+    return jsonify({"updated": cur.rowcount})
 
 
 def _register_entry_routes(table):
@@ -881,20 +1005,25 @@ _register_entry_routes("expenses")
 # ---------------------------------------------------------------- 미수금·미지급금 현황
 @app.route("/api/receivables")
 def receivables():
+    """받을 돈(매출 미수금)과 줄 돈(지출 미지급금 + 매출에서 거래처에 줄 미지급금) 잔액."""
     db = get_db()
+    summary = request.args.get("summary") in ("1", "true")  # 합계만 (대시보드·경영현황용)
     out = {}
-    for table in ("incomes", "expenses"):
-        bal = BALANCE_FIELD[table]
+    for key, table, bal in (("incomes", "incomes", "receivable"), ("expenses", "expenses", "payable"),
+                            ("payouts", "incomes", "payout_due")):
         tot = db.execute(f"SELECT COUNT(*) AS cnt, COALESCE(SUM({bal}),0) AS total "
                          f"FROM {table} WHERE {bal} > 0").fetchone()
+        if summary:
+            out[key] = {"total": tot["total"], "count": tot["cnt"]}
+            continue
         by_client = [dict(r) for r in db.execute(
             f"""SELECT COALESCE(NULLIF(client,''),'(미지정)') AS name, SUM({bal}) AS value,
                        COUNT(*) AS cnt, MIN(trx_date) AS oldest
                 FROM {table} WHERE {bal} > 0 GROUP BY name ORDER BY value DESC""")]
         items = [row_to_dict(r) for r in db.execute(
             f"SELECT * FROM {table} WHERE {bal} > 0 ORDER BY trx_date, id LIMIT 500")]
-        out[table] = {"total": tot["total"], "count": tot["cnt"], "by_client": by_client,
-                      "items": items}
+        out[key] = {"total": tot["total"], "count": tot["cnt"], "by_client": by_client,
+                    "items": items}
     return jsonify(out)
 
 
@@ -945,189 +1074,153 @@ def delete_code(rid):
     return jsonify({"ok": True})
 
 
-# ---------------------------------------------------------------- 통계
-def _range_stats(db, d_from, d_to, group_expr, group_label):
-    """[d_from, d_to] 구간 합계·시리즈·분류별 집계."""
-    inc = db.execute(
-        """SELECT COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(vat),0) AS vat,
-                  COALESCE(SUM(net_amount),0) AS net,
-                  -- 엑셀과 같이 카드 외 결제(현금·입금·계좌이체 등)는 모두 현금매출로 본다
-                  COALESCE(SUM(CASE WHEN payment_type='카드' THEN 0 ELSE amount END),0) AS cash,
-                  COALESCE(SUM(CASE WHEN payment_type='카드' THEN amount ELSE 0 END),0) AS card,
-                  COUNT(*) AS cnt, COUNT(DISTINCT trx_date) AS days
-           FROM incomes WHERE trx_date BETWEEN ? AND ?""", (d_from, d_to)).fetchone()
-    exp = db.execute(
-        """SELECT COALESCE(SUM(amount),0) AS amount, COUNT(*) AS cnt,
-                  COALESCE(SUM(CASE WHEN expense_type='제품원가' THEN amount ELSE 0 END),0) AS cost
-           FROM expenses WHERE trx_date BETWEEN ? AND ?""", (d_from, d_to)).fetchone()
-
-    series = {}
-    for r in db.execute(
-            f"""SELECT {group_expr} AS k, SUM(amount) AS v FROM incomes
-                WHERE trx_date BETWEEN ? AND ? GROUP BY k""", (d_from, d_to)):
-        series.setdefault(r["k"], {"income": 0, "expense": 0})["income"] = r["v"]
-    for r in db.execute(
-            f"""SELECT {group_expr} AS k, SUM(amount) AS v FROM expenses
-                WHERE trx_date BETWEEN ? AND ? GROUP BY k""", (d_from, d_to)):
-        series.setdefault(r["k"], {"income": 0, "expense": 0})["expense"] = r["v"]
-    series_list = [{"key": k, "income": v["income"], "expense": v["expense"],
-                    "profit": v["income"] - v["expense"]}
-                   for k, v in sorted(series.items())]
-
-    inc_by_cat = [dict(r) for r in db.execute(
-        """SELECT COALESCE(NULLIF(category,''),'(미분류)') AS name, SUM(amount) AS value, COUNT(*) AS cnt
-           FROM incomes WHERE trx_date BETWEEN ? AND ?
-           GROUP BY name ORDER BY value DESC""", (d_from, d_to))]
-    exp_by_type = [dict(r) for r in db.execute(
-        """SELECT COALESCE(NULLIF(expense_type,''),'(미분류)') AS name, SUM(amount) AS value, COUNT(*) AS cnt
-           FROM expenses WHERE trx_date BETWEEN ? AND ?
-           GROUP BY name ORDER BY value DESC""", (d_from, d_to))]
-    top_clients = [dict(r) for r in db.execute(
-        """SELECT COALESCE(NULLIF(client,''),'(미지정)') AS name, SUM(amount) AS value, COUNT(*) AS cnt
-           FROM incomes WHERE trx_date BETWEEN ? AND ?
-           GROUP BY name ORDER BY value DESC LIMIT 10""", (d_from, d_to))]
-
-    income_amt, expense_amt = inc["amount"], exp["amount"]
-    return {
-        "from": d_from, "to": d_to, "group": group_label,
-        "totals": {
-            "income": income_amt,
-            "expense": expense_amt,
-            "profit": income_amt - expense_amt,
-            "vat": inc["vat"],
-            "net_income": inc["net"],
-            "cash_income": inc["cash"],
-            "card_income": inc["card"],
-            "cost_expense": exp["cost"],
-            "income_count": inc["cnt"],
-            "expense_count": exp["cnt"],
-            "business_days": inc["days"],
-            "avg_daily_income": round(income_amt / inc["days"]) if inc["days"] else 0,
-            "expense_ratio": round(expense_amt / income_amt * 100, 1) if income_amt else 0,
-            "cost_ratio": round(exp["cost"] / income_amt * 100, 1) if income_amt else 0,
-        },
-        "series": series_list,
-        "income_by_category": inc_by_cat,
-        "expense_by_type": exp_by_type,
-        "top_clients": top_clients,
-    }
+# ---------------------------------------------------------------- 집계 (경영현황·분석 화면이 쓰는 원자료)
+AGG_DIMS = {
+    "incomes": ("income_type", "category", "manufacturer", "car_model", "product_model", "client",
+                "payment_type", "account", "currency", "tax_invoice"),
+    "expenses": ("expense_type", "item", "client", "payment_type", "currency"),
+}
+AGG_TIME = {"date": "trx_date", "month": "substr(trx_date,1,7)", "year": "substr(trx_date,1,4)"}
+AGG_MEASURES = {
+    # 현금매출(카드 외 전부)은 화면에서 amount − card로 구한다 (엑셀과 같은 기준)
+    "incomes": ("COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(vat),0) AS vat, "
+                "COALESCE(SUM(payout),0) AS payout, COALESCE(SUM(payout_due),0) AS payout_due, "
+                "COALESCE(SUM(receivable),0) AS receivable, "
+                "COALESCE(SUM(CASE WHEN payment_type='카드' THEN amount ELSE 0 END),0) AS card"),
+    "expenses": ("COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(payable),0) AS payable, "
+                 "COALESCE(SUM(CASE WHEN expense_type='제품원가' THEN amount ELSE 0 END),0) AS cost"),
+}
+AGG_MAX_ROWS = 200000
+AGG_MAX_DAYS = 366 * 30
 
 
 def _year_ok(year):
     return 1900 <= year <= 2999
 
 
-def month_range(year, month):
-    first = date(year, month, 1)
-    last = (date(year + 1, 1, 1) if month == 12 else date(year, month + 1, 1)) - timedelta(days=1)
-    return first.isoformat(), last.isoformat()
-
-
-def _outstanding(db):
-    inc = db.execute("SELECT COUNT(*), COALESCE(SUM(receivable),0) FROM incomes WHERE receivable > 0").fetchone()
-    exp = db.execute("SELECT COUNT(*), COALESCE(SUM(payable),0) FROM expenses WHERE payable > 0").fetchone()
-    return {"receivable": inc[1], "receivable_count": inc[0], "payable": exp[1], "payable_count": exp[0]}
-
-
-@app.route("/api/stats/daily")
-def stats_daily():
+def _parse_day(s):
     try:
-        d = datetime.strptime(request.args.get("date", ""), "%Y-%m-%d").date()
+        d = datetime.strptime(str(s or ""), "%Y-%m-%d").date()
     except ValueError:
-        return jsonify({"error": "date=YYYY-MM-DD 형식으로 요청하세요."}), 400
+        return None
+    return d if _year_ok(d.year) else None
+
+
+@app.route("/api/agg")
+def aggregate():
+    """기간 내 매출·지출을 날짜·월·연도와 분류(브랜드·차종·서비스구분 등)별로 합산한다.
+
+    ?kind=incomes|expenses&from=YYYY-MM-DD&to=YYYY-MM-DD&group=date,manufacturer (서로 다른 항목 3개까지)
+    &f.<분류>=값 (그 값인 내역만). 손익·전기·전년 동기·목표 비교는 화면(metrics.js)이 이 결과로 계산한다."""
+    kind = request.args.get("kind", "")
+    if kind not in AGG_MEASURES:
+        return jsonify({"error": "kind는 incomes 또는 expenses여야 합니다."}), 400
+    d_from, d_to = _parse_day(request.args.get("from")), _parse_day(request.args.get("to"))
+    if not d_from or not d_to or d_from > d_to:
+        return jsonify({"error": "from, to는 YYYY-MM-DD 형식이고 from이 to보다 앞서야 합니다."}), 400
+    if (d_to - d_from).days > AGG_MAX_DAYS:
+        return jsonify({"error": "조회 기간이 너무 깁니다."}), 400
+    groups = [g for g in (request.args.get("group") or "").split(",") if g]
+    if len(groups) > 3 or len(set(groups)) != len(groups):
+        return jsonify({"error": "group은 서로 다른 항목 3개까지입니다."}), 400
+    exprs = []
+    for g in groups:
+        if g in AGG_TIME:
+            exprs.append(AGG_TIME[g])
+        elif g in AGG_DIMS[kind]:
+            exprs.append(f"COALESCE({g},'')")
+        else:
+            return jsonify({"error": f"알 수 없는 group 항목입니다: {g}"}), 400
+    where, params = ["trx_date BETWEEN ? AND ?"], [d_from.isoformat(), d_to.isoformat()]
+    for key, value in request.args.items():
+        if key.startswith("f."):
+            dim = key[2:]
+            if dim not in AGG_DIMS[kind]:
+                return jsonify({"error": f"알 수 없는 조건 항목입니다: {dim}"}), 400
+            where.append(f"COALESCE({dim},'') = ?")
+            params.append(value)
+    select = ", ".join([f'{e} AS "{g}"' for e, g in zip(exprs, groups)] + [AGG_MEASURES[kind]])
+    sql = f"SELECT {select} FROM {kind} WHERE {' AND '.join(where)}"
+    if exprs:
+        sql += f" GROUP BY {', '.join(exprs)} ORDER BY {', '.join(exprs)}"
+    rows = get_db().execute(f"{sql} LIMIT {AGG_MAX_ROWS + 1}", params).fetchall()
+    return jsonify({"kind": kind, "from": d_from.isoformat(), "to": d_to.isoformat(), "group": groups,
+                    "rows": [dict(r) for r in rows[:AGG_MAX_ROWS]], "truncated": len(rows) > AGG_MAX_ROWS})
+
+
+# ---------------------------------------------------------------- 목표 (월별 매출·영업이익 목표, 지출 예산)
+TARGET_METRICS = ("sales", "profit", "expense")
+
+
+def _targets_payload(db):
+    out = {}
+    for r in db.execute("SELECT month, metric, value FROM targets ORDER BY month, metric"):
+        out.setdefault(r["month"], {})[r["metric"]] = r["value"]
+    return {"targets": out}
+
+
+@app.route("/api/targets")
+def get_targets():
+    return jsonify(_targets_payload(get_db()))
+
+
+@app.route("/api/targets", methods=["PUT"])
+@role_required("admin")
+def put_targets():
+    """한 해의 월별 목표를 통째로 바꾼다. 본문 {year, months: {"1": {sales, profit, expense}, ...}}
+    값이 비어 있으면 그 목표를 지운다. 매출 목표는 실매출(매출액 − 미지급금) 기준이다."""
+    body = json_body()
+    year, months = body.get("year"), body.get("months")
+    if (not isinstance(year, int) or isinstance(year, bool) or not _year_ok(year)
+            or not isinstance(months, dict)):
+        return jsonify({"error": "year(연도)와 months(월별 목표)가 필요합니다."}), 400
+    rows = []
+    for m in range(1, 13):
+        vals = months.get(str(m)) or {}
+        if not isinstance(vals, dict):
+            return jsonify({"error": f"{m}월 목표 형식이 올바르지 않습니다."}), 400
+        for metric in TARGET_METRICS:
+            v = vals.get(metric)
+            if v is None or v == "":
+                rows.append((f"{year}-{m:02d}", metric, None))
+                continue
+            try:
+                n = float(v)
+            except (TypeError, ValueError):
+                return jsonify({"error": f"{m}월 목표 값이 숫자가 아닙니다."}), 400
+            if not math.isfinite(n) or abs(n) > MAX_NUMBER or (metric != "profit" and n < 0):
+                return jsonify({"error": f"{m}월 목표 값이 올바르지 않습니다."}), 400
+            rows.append((f"{year}-{m:02d}", metric, round_half_up(n)))
     db = get_db()
-    day = _range_stats(db, d.isoformat(), d.isoformat(), "trx_date", "day")
-    prev = d - timedelta(days=1)
-    prev_stats = _range_stats(db, prev.isoformat(), prev.isoformat(), "trx_date", "day")
-    m_from, m_to = month_range(d.year, d.month)
-    month = _range_stats(db, m_from, m_to, "trx_date", "day")
-    recent_from = (d - timedelta(days=13)).isoformat()
-    recent = _range_stats(db, recent_from, d.isoformat(), "trx_date", "day")
-    return jsonify({
-        "date": d.isoformat(),
-        "weekday": WEEKDAYS[d.weekday()],
-        "day": day, "prev_day": prev_stats, "month": month,
-        "recent_series": recent["series"],
-        "recent_from": recent_from,
-        "outstanding": _outstanding(db),
-    })
-
-
-@app.route("/api/stats/monthly")
-def stats_monthly():
-    try:
-        year = int(request.args.get("year", ""))
-        month = int(request.args.get("month", ""))
-        assert 1 <= month <= 12 and _year_ok(year)
-    except (ValueError, AssertionError):
-        return jsonify({"error": "year, month 파라미터가 필요합니다."}), 400
-    db = get_db()
-    m_from, m_to = month_range(year, month)
-    stats = _range_stats(db, m_from, m_to, "trx_date", "day")
-    pm_year, pm_month = (year - 1, 12) if month == 1 else (year, month - 1)
-    p_from, p_to = month_range(pm_year, pm_month)
-    prev = _range_stats(db, p_from, p_to, "trx_date", "day")
-    stats["prev_totals"] = prev["totals"]
-    return jsonify(stats)
-
-
-@app.route("/api/stats/quarterly")
-def stats_quarterly():
-    try:
-        year = int(request.args.get("year", ""))
-        quarter = int(request.args.get("quarter", ""))
-        assert 1 <= quarter <= 4 and _year_ok(year)
-    except (ValueError, AssertionError):
-        return jsonify({"error": "year, quarter 파라미터가 필요합니다."}), 400
-    db = get_db()
-    m1 = (quarter - 1) * 3 + 1
-    q_from, _ = month_range(year, m1)
-    _, q_to = month_range(year, m1 + 2)
-    stats = _range_stats(db, q_from, q_to, "substr(trx_date,1,7)", "month")
-    if quarter == 1:
-        p_from, _ = month_range(year - 1, 10)
-        _, p_to = month_range(year - 1, 12)
-    else:
-        pm1 = (quarter - 2) * 3 + 1
-        p_from, _ = month_range(year, pm1)
-        _, p_to = month_range(year, pm1 + 2)
-    prev = _range_stats(db, p_from, p_to, "substr(trx_date,1,7)", "month")
-    stats["prev_totals"] = prev["totals"]
-    return jsonify(stats)
-
-
-@app.route("/api/stats/yearly")
-def stats_yearly():
-    try:
-        year = int(request.args.get("year", ""))
-        assert _year_ok(year)
-    except (ValueError, AssertionError):
-        return jsonify({"error": "year 파라미터가 필요합니다."}), 400
-    db = get_db()
-    stats = _range_stats(db, f"{year}-01-01", f"{year}-12-31", "substr(trx_date,1,7)", "month")
-    prev = _range_stats(db, f"{year-1}-01-01", f"{year-1}-12-31", "substr(trx_date,1,7)", "month")
-    stats["prev_totals"] = prev["totals"]
-    return jsonify(stats)
+    for month, metric, value in rows:
+        if value is None:
+            db.execute("DELETE FROM targets WHERE month=? AND metric=?", (month, metric))
+        else:
+            db.execute("INSERT OR REPLACE INTO targets(month, metric, value) VALUES (?,?,?)",
+                       (month, metric, value))
+    db.commit()
+    return jsonify(_targets_payload(db))
 
 
 def _monthly_rows(db, inc_filter=None, exp_filter=None):
-    """월별 건수·합계. *_filter는 _entry_filters 결과이며 None이면 그 테이블은 0으로 둔다."""
+    """월별 건수·합계(엑셀 내보내기의 월별손익). *_filter는 _entry_filters 결과이며 None이면 그 테이블은 0."""
     months = {}
 
     def slot(m):
         return months.setdefault(m, {"month": m, "income_count": 0, "income": 0, "vat": 0,
-                                     "net_income": 0, "receivable": 0, "expense_count": 0,
-                                     "expense": 0, "payable": 0})
+                                     "net_income": 0, "receivable": 0, "payout": 0, "payout_due": 0,
+                                     "expense_count": 0, "expense": 0, "payable": 0})
     if inc_filter is not None:
         where, params = inc_filter
         for r in db.execute(
                 f"""SELECT substr(trx_date,1,7) AS m, COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount,
                            COALESCE(SUM(vat),0) AS vat, COALESCE(SUM(net_amount),0) AS net,
-                           COALESCE(SUM(receivable),0) AS bal
+                           COALESCE(SUM(receivable),0) AS bal, COALESCE(SUM(payout),0) AS payout,
+                           COALESCE(SUM(payout_due),0) AS payout_due
                     FROM incomes{where} GROUP BY m""", params):
             s = slot(r["m"])
-            s.update(income_count=r["cnt"], income=r["amount"], vat=r["vat"],
-                     net_income=r["net"], receivable=r["bal"])
+            s.update(income_count=r["cnt"], income=r["amount"], vat=r["vat"], net_income=r["net"],
+                     receivable=r["bal"], payout=r["payout"], payout_due=r["payout_due"])
     if exp_filter is not None:
         where, params = exp_filter
         for r in db.execute(
@@ -1138,19 +1231,39 @@ def _monthly_rows(db, inc_filter=None, exp_filter=None):
             s.update(expense_count=r["cnt"], expense=r["amount"], payable=r["bal"])
     rows = [months[k] for k in sorted(months)]
     for s in rows:
-        s["profit"] = s["income"] - s["expense"]
+        s["sales"] = s["income"] - s["payout"]  # 실매출 = 매출액 − 미지급금(매출차감)
+        s["profit"] = s["sales"] - s["expense"]
     return rows
 
 
-@app.route("/api/stats/months")
-def stats_months():
-    """기간 내 월별 건수·금액 (엑셀 가져오기 대조표에 사용)."""
-    args = {k: request.args.get(k) for k in ("from", "to")}
-    db = get_db()
-    return jsonify(_monthly_rows(db, _entry_filters("incomes", args), _entry_filters("expenses", args)))
-
-
 # ---------------------------------------------------------------- 엑셀 내보내기
+XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_UNSET = "'(미지정)'"
+
+
+def _count_where(db, table, filt, cond):
+    where, params = filt
+    return db.execute(f"SELECT COUNT(*) FROM {table}{where}{' AND' if where else ' WHERE'} {cond}",
+                      params).fetchone()[0]
+
+
+def _dimension_spec(db, table, filt, title, label, name_sql, value_sql, note, by_year):
+    """엑셀 내보내기의 분류별 집계표 (분류 × 월, 기간이 길면 × 연도)."""
+    where, params = filt
+    col = "substr(trx_date,1,4)" if by_year else "substr(trx_date,1,7)"
+    rows = {}
+    for r in db.execute(f"SELECT {name_sql} AS name, {col} AS c, COUNT(*) AS cnt, "
+                        f"COALESCE(SUM({value_sql}),0) AS v FROM {table}{where} GROUP BY name, c", params):
+        it = rows.setdefault(r["name"], {"name": r["name"], "cnt": 0, "total": 0, "cells": {}})
+        it["cnt"] += r["cnt"]
+        it["total"] += r["v"]
+        it["cells"][r["c"]] = r["v"]
+    cols = sorted({c for it in rows.values() for c in it["cells"]})
+    return {"title": title, "label": label, "note": note, "cols": cols,
+            "col_labels": [f"{c}년" if by_year else c for c in cols],
+            "rows": sorted(rows.values(), key=lambda it: (-it["total"], it["name"]))}
+
+
 @app.route("/api/export.xlsx")
 def export_xlsx():
     kind = request.args.get("kind", "all")
@@ -1169,14 +1282,11 @@ def export_xlsx():
     exp_f = _entry_filters("expenses", request.args) if exp_on else None
     monthly = _monthly_rows(db, inc_f, exp_f)
     totals = {k: sum(m[k] for m in monthly) for k in
-              ("income", "income_count", "vat", "net_income", "receivable", "expense",
-               "expense_count", "payable")}
-    totals["receivable_count"] = db.execute(
-        f"SELECT COUNT(*) FROM incomes{inc_f[0]}{' AND' if inc_f[0] else ' WHERE'} receivable > 0",
-        inc_f[1]).fetchone()[0] if inc_on else 0
-    totals["payable_count"] = db.execute(
-        f"SELECT COUNT(*) FROM expenses{exp_f[0]}{' AND' if exp_f[0] else ' WHERE'} payable > 0",
-        exp_f[1]).fetchone()[0] if exp_on else 0
+              ("income", "income_count", "vat", "net_income", "receivable", "payout", "payout_due",
+               "expense", "expense_count", "payable")}
+    totals["receivable_count"] = _count_where(db, "incomes", inc_f, "receivable > 0") if inc_on else 0
+    totals["payout_due_count"] = _count_where(db, "incomes", inc_f, "payout_due > 0") if inc_on else 0
+    totals["payable_count"] = _count_where(db, "expenses", exp_f, "payable > 0") if exp_on else 0
 
     d_from, d_to = request.args.get("from") or "", request.args.get("to") or ""
     period = f"{d_from or '처음'} ~ {d_to or '오늘까지'}" if (d_from or d_to) else "전체 기간"
@@ -1192,15 +1302,51 @@ def export_xlsx():
     label = {"all": "매출지출", "incomes": "매출", "expenses": "지출"}[kind]
     title = {"all": "매출/지출", "incomes": "매출", "expenses": "지출"}[kind]
     meta = {"title": f"웰카오디오 {title} 내역", "period": period, "conditions": ", ".join(conds),
-            "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
-            "exported_by": user_label(current_user())}
+            "exported_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "exported_by": user_label(current_user()),
+            "instance": get_setting(db, "instance_id", "")}
+    # 분류별 집계표: 기간이 2년을 넘으면 월 대신 연도별 열
+    by_year = len(monthly) > 24
+    unit = "연도별" if by_year else "월별"
+    dims = []
+    if inc_on:
+        brand = f"COALESCE(NULLIF(manufacturer,''),{_UNSET})"
+        note = f"단위: 원 · 실매출(매출액 − 미지급금) 기준 · {unit} · {period}"
+        dims += [
+            _dimension_spec(db, "incomes", inc_f, "브랜드별", "브랜드", brand, "amount - payout", note, by_year),
+            _dimension_spec(db, "incomes", inc_f, "차종별", "브랜드 · 차종",
+                            f"{brand} || ' · ' || COALESCE(NULLIF(car_model,''),{_UNSET})",
+                            "amount - payout", note, by_year),
+            _dimension_spec(db, "incomes", inc_f, "서비스구분별", "매출유형 · 매출구분(서비스 구분)",
+                            f"COALESCE(NULLIF(income_type,''),{_UNSET}) || ' · ' || "
+                            f"COALESCE(NULLIF(category,''),{_UNSET})", "amount - payout", note, by_year),
+        ]
+    if exp_on:
+        dims.append(_dimension_spec(
+            db, "expenses", exp_f, "지출유형별", "지출유형 · 거래품목",
+            f"COALESCE(NULLIF(expense_type,''),{_UNSET}) || ' · ' || COALESCE(NULLIF(item,''),{_UNSET})",
+            "amount", f"단위: 원 · 지출금액 · {unit} · {period}", by_year))
     order = " ORDER BY trx_date, id"
     incomes = db.execute(f"SELECT * FROM incomes{inc_f[0]}{order}", inc_f[1]) if inc_on else None
     expenses = db.execute(f"SELECT * FROM expenses{exp_f[0]}{order}", exp_f[1]) if exp_on else None
-    data = exporter.build_workbook(meta, totals, monthly, incomes, expenses)
+    data = exporter.build_workbook(meta, totals, monthly, incomes, expenses, dims)
     span = f"{d_from or '처음'}_{d_to or '현재'}" if (d_from or d_to) else "전체"
     return send_file(BytesIO(data), as_attachment=True, download_name=f"웰카오디오_{label}_{span}.xlsx",
-                     mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+                     mimetype=XLSX_MIME)
+
+
+@app.route("/api/template.xlsx")
+def template_xlsx():
+    """엑셀 입력 양식: 매출입력·지출입력 시트(드롭다운은 지금 코드관리 목록)."""
+    lists = {}
+    for r in get_db().execute(
+            "SELECT code_group, code_value FROM codes ORDER BY code_group, parent_value, sort_order, id"):
+        values = lists.setdefault(r["code_group"], [])
+        if r["code_value"] not in values:
+            values.append(r["code_value"])
+    lists["yn"] = ["Y", "N"]
+    return send_file(BytesIO(exporter.build_template(lists)), as_attachment=True,
+                     download_name="웰카오디오_입력양식.xlsx", mimetype=XLSX_MIME)
 
 
 # ---------------------------------------------------------------- 백업·복원 (관리자)
@@ -1247,6 +1393,9 @@ def restore_backup(name):
         backup.inspect_backup(path)
         safety = backup.create_backup(DB_PATH, BACKUP_DIR, "pre-restore", protect={name})
         counts = backup.restore_data(DB_PATH, path)
+        db = get_db()
+        _data_migrations(db)  # 옛 백업의 내역도 새 열(미지급금·엑셀 표시)로 옮긴다
+        db.commit()
     except ValueError as e:
         return jsonify({"error": str(e)}), 400
     except (OSError, sqlite3.Error) as e:
@@ -1277,17 +1426,18 @@ def delete_backup(name):
     return jsonify({"ok": True})
 
 
-# ---------------------------------------------------------------- 엑셀 마이그레이션
+# ---------------------------------------------------------------- 엑셀 업로드 (자동 반영)
 IMPORT_LIMIT = 50000
+IMPORT_SAMPLE_LIMIT = 50
 IMPORT_KEYS = {
     "incomes": ["trx_date", "income_type", "category", "client", "amount", "vat", "memo"],
     "expenses": ["trx_date", "expense_type", "item", "client", "amount", "memo"],
 }
 IMPORT_DEFAULTS = {
-    "incomes": {"category": "", "manufacturer": "", "product_model": "", "client": "",
+    "incomes": {"category": "", "manufacturer": "", "car_model": "", "product_model": "", "client": "",
                 "currency": "KRW", "exchange_rate": 1, "quantity": 1, "unit_price": 0,
                 "vat": 0, "account": "", "payment_type": "", "tax_invoice": "N", "memo": "",
-                "receivable": 0},
+                "receivable": 0, "payout": 0, "payout_due": 0},
     "expenses": {"item": "", "payment_type": "", "client": "", "currency": "KRW",
                  "exchange_rate": 1, "quantity": 1, "unit_price": 0, "memo": "", "payable": 0},
 }
@@ -1297,7 +1447,7 @@ _PAYABLE_NOTE_RE = re.compile(r"\s*\[미지급금 [^\]]*\]$")
 
 
 def _dedupe_key(row, key_fields):
-    """같은 거래인지 판정하는 키. 금액은 화면과 같은 반올림으로, 적요는 가져오기가 덧붙이는
+    """같은 거래인지 판정하는 키. 금액은 화면과 같은 반올림으로, 적요는 예전 가져오기가 덧붙이던
     '[미지급금 …]' 표기를 빼고 비교해 이전 버전으로 가져온 내역과도 중복으로 잡히게 한다."""
     def part(f):
         v = row[f]
@@ -1308,44 +1458,159 @@ def _dedupe_key(row, key_fields):
     return tuple(part(f) for f in key_fields)
 
 
-def _plan_import(db, table, rows, results, invalid_samples):
-    """검증 후 DB에 없는 행만 골라낸다(멀티셋 중복 제거: 같은 키가 DB에 n건 있으면 n건까지 건너뜀)."""
+def _key_str(key):
+    return "\x1f".join(str(p) for p in key)
+
+
+# 엑셀 파서가 반올림하는 자릿수만큼은 같은 값으로 본다 (단가 소수 2자리, 환율 4자리)
+_NUMERIC_TOLERANCE = {"unit_price": 0.006, "exchange_rate": 0.00006}
+
+
+def _same_value(field, a, b):
+    if field in INTEGER_FIELDS:
+        return round_half_up(a or 0) == round_half_up(b or 0)
+    if field in _NUMERIC_TOLERANCE:
+        return abs(float(a or 0) - float(b or 0)) < _NUMERIC_TOLERANCE[field]
+    if field in NUMERIC_FIELDS:
+        a, b = float(a or 0), float(b or 0)
+        return abs(a - b) <= 1e-6 * max(1.0, abs(a), abs(b))
+    return str(a if a is not None else "").strip() == str(b if b is not None else "").strip()
+
+
+def _sample(row, reason):
+    return {"src": str(row.get("src") or "")[:80], "trx_date": str(row.get("trx_date") or "")[:10],
+            "amount": row.get("amount") if isinstance(row.get("amount"), (int, float)) else 0,
+            "client": str(row.get("client") or "")[:40], "reason": reason}
+
+
+def _plan_import(db, table, rows, mode):
+    """엑셀에서 읽은 행을 DB와 맞춰 볼 계획을 세운다(DB는 바꾸지 않는다).
+
+    - 관리번호(id)가 있는 행(이 시스템에서 내보낸 파일): 그 내역과 비교해 달라진 항목만 고친다.
+      파일을 내보낸 뒤 시스템에서 먼저 고친 내역은 덮어쓰지 않고 '충돌'로 건너뛴다.
+    - 관리번호가 없는 행: 같은 거래(중복 판정 키)가 이미 있으면 건너뛰고, 없으면 새로 등록한다.
+      같은 키가 DB에 n건 있으면 파일에서 n건까지 건너뛴다(멀티셋). 엑셀로 들어온 뒤 화면에서
+      고친 내역은 처음 들어올 때의 키(import_key)로도 알아봐서 다시 들어오지 않게 한다.
+    - mode='sync'(엑셀 장부와 맞추기): 파일 기간 안에서 예전에 엑셀로 들어온 내역 중 파일에 없는 것은 지운다.
+      화면에서 직접 입력한 내역은 지우지 않는다.
+    """
     fields, required = TABLE_SPEC[table]
     key_fields = IMPORT_KEYS[table]
+    counts = dict.fromkeys(("added", "updated", "same", "conflict", "missing", "deleted", "invalid"), 0)
+    samples = {k: [] for k in ("invalid", "updated", "conflict", "missing", "deleted")}
+    plan = {"counts": counts, "samples": samples, "inserts": [], "updates": [], "deletes": [],
+            "valid": [], "range": None}
+
+    def note(kind, row, reason):
+        if len(samples[kind]) < IMPORT_SAMPLE_LIMIT:
+            samples[kind].append(_sample(row, reason))
+
     valid = []
     for r in rows:
         if not isinstance(r, dict):
-            results[f"{table}_invalid"] += 1
+            counts["invalid"] += 1
             continue
         data, err = _clean_entry(r, fields, required, table, clamp_balance=True)
         if not err and not data.get("amount"):
             err = "금액이 0입니다."
         if err:
-            results[f"{table}_invalid"] += 1
-            if len(invalid_samples) < 200:
-                invalid_samples.append({"kind": table, "src": str(r.get("src") or "")[:80], "reason": err})
+            counts["invalid"] += 1
+            note("invalid", r, err)
             continue
         full = dict(IMPORT_DEFAULTS[table])
         full.update(data)
         if table == "incomes" and "net_amount" not in data:
             full["net_amount"] = full["amount"] - full["vat"]
-        valid.append(full)
+        ref = r.get("id")
+        ref = ref if isinstance(ref, int) and not isinstance(ref, bool) and 0 < ref < 2 ** 63 else None
+        absent = set(r.get("_absent") or []) if ref else set()
+        valid.append({"data": full, "src": r.get("src"), "ref": ref,
+                      "ref_time": str(r.get("ref_time") or "")[:19],
+                      "present": [f for f in fields if f in data and f not in absent]})
+    plan["valid"] = [v["data"] for v in valid]
     if not valid:
-        return [], []
-    lo = min(d["trx_date"] for d in valid)
-    hi = max(d["trx_date"] for d in valid)
-    existing = Counter(
-        _dedupe_key(r, key_fields) for r in db.execute(
-            f"SELECT {', '.join(key_fields)} FROM {table} WHERE trx_date BETWEEN ? AND ?", (lo, hi)))
-    plan = []
-    for d in valid:
-        k = _dedupe_key(d, key_fields)
-        if existing[k] > 0:
-            existing[k] -= 1
-            results[f"{table}_skipped"] += 1
+        return plan
+    lo = min(v["data"]["trx_date"] for v in valid)
+    hi = max(v["data"]["trx_date"] for v in valid)
+    plan["range"] = [lo, hi]
+    existing = {r["id"]: r for r in db.execute(
+        f"SELECT * FROM {table} WHERE trx_date BETWEEN ? AND ?", (lo, hi))}
+    want = sorted({v["ref"] for v in valid if v["ref"]} - existing.keys())
+    for i in range(0, len(want), 500):
+        chunk = want[i:i + 500]
+        for r in db.execute(f"SELECT * FROM {table} WHERE id IN ({','.join('?' * len(chunk))})", chunk):
+            existing[r["id"]] = r
+    consumed = set()
+
+    # 1) 관리번호가 있는 행: 그 내역과 비교
+    for v in valid:
+        if not v["ref"]:
+            continue
+        row = existing.get(v["ref"])
+        shown = dict(v["data"], src=v["src"])
+        if row is None:
+            counts["missing"] += 1
+            note("missing", shown, f"관리번호 {v['ref']} 내역이 시스템에 없습니다(삭제된 내역).")
+            continue
+        if row["id"] in consumed:
+            counts["invalid"] += 1
+            note("invalid", shown, f"관리번호 {v['ref']}이(가) 파일에 두 번 있습니다.")
+            continue
+        consumed.add(row["id"])
+        merged = {f: row[f] for f in fields}
+        merged.update({f: v["data"][f] for f in v["present"]})
+        clean, err = _clean_entry(merged, fields, required, table)
+        if err:
+            counts["invalid"] += 1
+            note("invalid", shown, err)
+            continue
+        changes = {f: clean[f] for f in fields if f in clean and not _same_value(f, clean[f], row[f])}
+        if not changes:
+            counts["same"] += 1
+            continue
+        last = max(row["created_at"] or "", row["updated_at"] or "")
+        if v["ref_time"] and last > v["ref_time"]:
+            counts["conflict"] += 1
+            note("conflict", shown, f"관리번호 {v['ref']}: 파일을 받은 뒤 시스템에서 고친 내역이라 덮어쓰지 않았습니다.")
+            continue
+        plan["updates"].append((row["id"], changes))
+        counts["updated"] += 1
+        note("updated", shown, "바뀐 항목: " + ", ".join(FIELD_LABELS.get(f, f) for f in changes))
+
+    # 2) 관리번호가 없는 행: 중복 판정 키로 맞춰 본다 (맞추기 모드는 엑셀 출처 내역부터 짝지음)
+    index = {}
+    ordered = sorted(existing.values(),
+                     key=lambda r: (0 if mode == "sync" and r["source"] == "excel" else 1, r["id"]))
+    for r in ordered:
+        if r["id"] in consumed:
+            continue
+        for k in {_key_str(_dedupe_key(r, key_fields)), r["import_key"] or None} - {None}:
+            index.setdefault(k, []).append(r["id"])
+    for v in valid:
+        if v["ref"]:
+            continue
+        k = _key_str(_dedupe_key(v["data"], key_fields))
+        hit, cands = None, index.get(k)
+        while cands:
+            rid = cands.pop(0)
+            if rid not in consumed:
+                hit = rid
+                break
+        if hit:
+            consumed.add(hit)
+            counts["same"] += 1
         else:
-            plan.append(d)
-    return plan, valid
+            plan["inserts"].append(dict(v["data"], import_key=k))
+            counts["added"] += 1
+
+    # 3) 엑셀 장부와 맞추기: 파일 기간 안의 엑셀 출처 내역 중 파일에 없는 것
+    if mode == "sync":
+        for r in existing.values():
+            if r["id"] not in consumed and r["source"] == "excel" and lo <= r["trx_date"] <= hi:
+                plan["deletes"].append(r["id"])
+                note("deleted", dict(r), "엑셀 파일에 없는 내역(예전에 엑셀로 올린 것)")
+        counts["deleted"] = len(plan["deletes"])
+    return plan
 
 
 def _auto_add_codes(db, incomes, expenses, results):
@@ -1359,6 +1624,8 @@ def _auto_add_codes(db, incomes, expenses, results):
             wanted.add(("income_type", it, ""))
             if text(r, "category"):
                 wanted.add(("income_category", text(r, "category"), it))
+        if text(r, "manufacturer") and text(r, "car_model"):
+            wanted.add(("car_model", text(r, "car_model"), text(r, "manufacturer")))
         for group, field in (("payment_type", "payment_type"), ("account", "account"),
                              ("manufacturer", "manufacturer"), ("client", "client"),
                              ("currency", "currency")):
@@ -1391,42 +1658,66 @@ def _auto_add_codes(db, incomes, expenses, results):
 
 
 @app.route("/api/import-json", methods=["POST"])
-@role_required("admin")
+@role_required("staff")
 def import_json():
+    """엑셀에서 읽은 내역을 반영한다. 본문 {incomes, expenses, mode: append|sync, dry_run}
+
+    dry_run이면 무엇이 바뀔지 건수만 돌려준다(화면의 미리보기). 실제로 바뀌는 내역이 있으면
+    반영 직전 상태를 '가져오기 직전' 백업으로 남긴다. 맞추기(sync)는 삭제가 있어 관리자만 할 수 있다."""
     body = json_body()
     incomes = body.get("incomes") or []
     expenses = body.get("expenses") or []
+    mode = body.get("mode") or "append"
+    dry_run = bool(body.get("dry_run"))
+    if mode not in ("append", "sync"):
+        return jsonify({"error": "mode는 append 또는 sync여야 합니다."}), 400
+    if mode == "sync" and current_user()["role"] != "admin":
+        return jsonify({"error": "엑셀 장부와 맞추기는 관리자만 할 수 있습니다."}), 403
     if not isinstance(incomes, list) or not isinstance(expenses, list):
         return jsonify({"error": "incomes, expenses 배열이 필요합니다."}), 400
     if len(incomes) + len(expenses) > IMPORT_LIMIT:
-        return jsonify({"error": f"한 번에 {IMPORT_LIMIT:,}건까지 가져올 수 있습니다."}), 400
+        return jsonify({"error": f"한 번에 {IMPORT_LIMIT:,}건까지 올릴 수 있습니다."}), 400
     db = get_db()
-    results = {"incomes_added": 0, "incomes_skipped": 0, "incomes_invalid": 0,
-               "expenses_added": 0, "expenses_skipped": 0, "expenses_invalid": 0,
-               "codes_added": 0, "backup": ""}
-    invalid_samples = []
-    inc_plan, inc_valid = _plan_import(db, "incomes", incomes, results, invalid_samples)
-    exp_plan, exp_valid = _plan_import(db, "expenses", expenses, results, invalid_samples)
-    if inc_plan or exp_plan:
-        try:  # 새로 들어갈 내역이 있으면 가져오기 직전 상태를 백업
-            if backup.has_data(DB_PATH):
-                results["backup"] = backup.create_backup(DB_PATH, BACKUP_DIR, "pre-import")["name"]
-        except (OSError, sqlite3.Error) as e:
-            return jsonify({"error": f"가져오기 직전 백업에 실패해 가져오기를 멈췄습니다: {e}"}), 500
-    who = f"{user_label(current_user())} (엑셀)"
-    for table, plan in (("incomes", inc_plan), ("expenses", exp_plan)):
-        if not plan:
-            continue
-        fields = TABLE_SPEC[table][0]
-        cols = fields + ["created_by"]
-        db.executemany(
-            f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
-            [[d[c] for c in fields] + [who] for d in plan])
-        results[f"{table}_added"] = len(plan)
-    _auto_add_codes(db, inc_valid, exp_valid, results)
-    db.commit()
-    results["invalid_samples"] = invalid_samples
-    return jsonify(results)
+    if not dry_run:
+        db.execute("BEGIN IMMEDIATE")  # 계획을 세우는 동안 다른 저장이 끼어들어 중복이 생기지 않게
+    try:
+        plans = {"incomes": _plan_import(db, "incomes", incomes, mode),
+                 "expenses": _plan_import(db, "expenses", expenses, mode)}
+        result = {"mode": mode, "dry_run": dry_run, "backup": "", "codes_added": 0}
+        for t, p in plans.items():
+            result[t] = p["counts"]
+        result["samples"] = {t: p["samples"] for t, p in plans.items()}
+        result["range"] = {t: p["range"] for t, p in plans.items()}
+        if dry_run:
+            return jsonify(result)
+        if any(p["inserts"] or p["updates"] or p["deletes"] for p in plans.values()):
+            try:  # 바뀌는 내역이 있으면 반영 직전 상태를 백업 (다른 연결로 읽으므로 아직 쓰기 전 상태)
+                if backup.has_data(DB_PATH):
+                    result["backup"] = backup.create_backup(DB_PATH, BACKUP_DIR, "pre-import")["name"]
+            except (OSError, sqlite3.Error) as e:
+                return jsonify({"error": f"반영 직전 백업에 실패해 멈췄습니다: {e}"}), 500
+        who = f"{user_label(current_user())} (엑셀)"
+        now = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        for table, plan in plans.items():
+            fields = TABLE_SPEC[table][0]
+            if plan["inserts"]:
+                cols = fields + ["created_by", "source", "import_key"]
+                db.executemany(
+                    f"INSERT INTO {table} ({', '.join(cols)}) VALUES ({', '.join('?' * len(cols))})",
+                    [[d[c] for c in fields] + [who, "excel", d["import_key"]] for d in plan["inserts"]])
+            for rid, changes in plan["updates"]:
+                sets = ", ".join(f"{k}=?" for k in changes)
+                db.execute(f"UPDATE {table} SET {sets}, updated_by=?, updated_at=? WHERE id=?",
+                           list(changes.values()) + [who, now, rid])
+            for i in range(0, len(plan["deletes"]), 500):
+                chunk = plan["deletes"][i:i + 500]
+                db.execute(f"DELETE FROM {table} WHERE id IN ({','.join('?' * len(chunk))})", chunk)
+        _auto_add_codes(db, plans["incomes"]["valid"], plans["expenses"]["valid"], result)
+        db.commit()
+        return jsonify(result)
+    finally:
+        if db.in_transaction:
+            db.rollback()
 
 
 @app.route("/api/meta")
@@ -1437,7 +1728,8 @@ def meta():
         for r in db.execute(f"SELECT DISTINCT substr(trx_date,1,4) AS y FROM {table}"):
             years.add(r["y"])
     years.add(str(date.today().year))
-    return jsonify({"years": sorted(years), "today": date.today().isoformat()})
+    return jsonify({"years": sorted(years), "today": date.today().isoformat(),
+                    "instance": get_setting(db, "instance_id", "")})
 
 
 @app.route("/")

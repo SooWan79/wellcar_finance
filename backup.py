@@ -4,7 +4,7 @@
 - 종류: auto(자동, 하루 1회), manual(수동), pre-import(엑셀 가져오기 직전),
         pre-restore(복원 직전), upload(업로드한 백업 파일)
 - 종류별로 최근 N개만 남기고 오래된 파일은 지운다(KEEP).
-- 복원은 매출·지출·코드 테이블만 되돌린다. 사용자 계정과 설정은 그대로 두어
+- 복원은 매출·지출·코드·목표 테이블만 되돌린다. 사용자 계정과 설정은 그대로 두어
   옛 백업을 복원해도 로그인이 막히지 않게 한다.
 """
 import os
@@ -23,7 +23,7 @@ KIND_LABELS = {
 NAME_RE = re.compile(
     r"^wellcar-(\d{8})-(\d{6})(?:-(\d+))?-(auto|manual|pre-import|pre-restore|upload)\.db$")
 KEEP = {"auto": 30, "manual": 30, "pre-import": 10, "pre-restore": 10, "upload": 10}
-DATA_TABLES = ("incomes", "expenses", "codes")
+DATA_TABLES = ("incomes", "expenses", "codes", "targets")
 SQLITE_MAGIC = b"SQLite format 3\x00"
 
 
@@ -190,10 +190,10 @@ def store_upload(stream, backup_dir):
 
 
 def restore_data(db_path, src_path):
-    """백업 파일의 매출·지출·코드 테이블로 현재 DB를 덮어쓴다(한 트랜잭션).
+    """백업 파일의 매출·지출·코드·목표 테이블로 현재 DB를 덮어쓴다(한 트랜잭션).
 
     두 DB에 모두 있는 열만 옮기므로 열이 추가되기 전의 옛 백업도 복원할 수 있다.
-    백업의 코드 테이블이 비어 있으면 현재 코드를 유지한다(드랍다운이 비지 않도록).
+    백업의 코드·목표 테이블이 비어 있거나 없으면 현재 것을 유지한다(드랍다운·목표가 사라지지 않도록).
     """
     inspect_backup(src_path)
     con = sqlite3.connect(db_path, timeout=30, isolation_level=None)
@@ -208,7 +208,8 @@ def restore_data(db_path, src_path):
                 for t in DATA_TABLES:
                     if t not in bk_tables:
                         continue
-                    if t == "codes" and not con.execute("SELECT COUNT(*) FROM bk.codes").fetchone()[0]:
+                    if t in ("codes", "targets") and not con.execute(
+                            f"SELECT COUNT(*) FROM bk.{t}").fetchone()[0]:
                         continue
                     main_cols = [r[1] for r in con.execute(f"PRAGMA main.table_info({t})")]
                     bk_cols = {r[1] for r in con.execute(f"PRAGMA bk.table_info({t})")}
