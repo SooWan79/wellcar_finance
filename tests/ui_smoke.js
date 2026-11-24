@@ -25,7 +25,7 @@ const BASE = process.env.BASE_URL || "http://localhost:8000";
 const USER = process.env.UI_USER || "admin";
 const PASS = process.env.UI_PASS || "dev-pass-1234";
 const SHOT = process.env.SHOT_DIR || "";
-const TABS = ["dashboard", "income", "expense", "balances", "report", "analysis", "targets", "data", "codes", "users"];
+const TABS = ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets", "data", "codes", "users"];
 
 const errors = [];
 const steps = [];
@@ -59,8 +59,14 @@ async function confirmOk(page) {
   await page.waitForTimeout(150);
 }
 
+/** 화면 이동: 넓은 화면은 위쪽 탭, 휴대폰 폭은 아래쪽 메뉴나 '더보기' 전체 메뉴 */
 async function tab(page, name) {
-  await page.click(`#mainTabs [data-view="${name}"]`);
+  if (await page.isVisible(`#mainTabs [data-view="${name}"]`)) await page.click(`#mainTabs [data-view="${name}"]`);
+  else if (await page.isVisible(`#bottomNav [data-view="${name}"]`)) await page.click(`#bottomNav [data-view="${name}"]`);
+  else {
+    await page.click("#bnMore");
+    await page.click(`#moreSheet [data-view="${name}"]`);
+  }
   await page.waitForTimeout(350);
 }
 
@@ -97,6 +103,21 @@ async function uploadExcel(page, file) {
     await page.waitForFunction(() => document.getElementById("loginError").textContent.length > 0);
     step("잘못된 비밀번호 안내: " + await page.textContent("#loginError"));
     errors.length = 0;  // 일부러 틀린 로그인의 401 응답 로그는 오류로 세지 않는다
+
+    // 1-1) 시험 계정(서버를 WELLCAR_TEST_ACCOUNTS=1로 띄웠거나 데모일 때): 누르면 바로 로그인
+    if (await page.isVisible("#testAccounts")) {
+      const n = await page.locator("#testAccountList .ta-item").count();
+      assert(n === 3, `시험 계정 3개 (${n})`);
+      await page.click("#testAccountList .ta-item:has(.ta-role.role-staff)");
+      await page.waitForSelector("#appShell:not([hidden])");
+      assert(await page.evaluate(() => document.body.classList.contains("role-staff")), "시험 직원 권한");
+      assert(/시험 계정/.test(await page.textContent("#userRole")), "시험 계정 표시");
+      await page.click("#userBtn");
+      assert(!(await page.isVisible("#menuPassword")), "시험 계정은 비밀번호 변경 숨김");
+      await page.click("#menuLogout");
+      await page.waitForSelector("#loginForm:not([hidden])");
+      step(`시험 계정 ${n}개 표시, 누르면 바로 로그인(직원 권한), 비밀번호 변경 숨김`);
+    }
     await login(page, USER, PASS);
     step("관리자 로그인");
 
@@ -252,6 +273,66 @@ async function uploadExcel(page, file) {
     await page.waitForTimeout(600);
     step("경영현황: 일·주·월·분기·연 전환, 전기·전년 동기·목표 비교표와 차트");
 
+    // 9-3a) 추세·예측: 이번 달 마감·다음 달·올해 예상, 범위 띠, 지출·영업이익, 브랜드 범위, 12개월
+    await tab(page, "forecast");
+    await page.waitForTimeout(1200);
+    assert(await page.locator("#fcTiles .kpi").count() === 4, "예측 지표 4개");
+    assert(/마감 예상/.test(await page.textContent("#fcTiles")), "이번 달 마감 예상");
+    assert(await page.locator("#fcChart svg polygon").count() === 1, "예측 범위 띠");
+    assert(await page.locator("#fcTable tbody tr").count() === 8, "예측표: 이번 달 + 6개월 + 합계");
+    assert(await page.locator("#fcSeason svg").count() === 1, "계절성 차트");
+    await shot(page, "forecast");
+    for (const k of ["expense", "profit"]) {
+      await page.click(`#fcKind [data-kind="${k}"]`);
+      await page.waitForTimeout(900);
+      assert(await page.locator("#fcTiles .kpi").count() === 4, `${k} 예측 지표`);
+      assert(await page.locator("#fcChart svg").count() === 1, `${k} 예측 차트`);
+    }
+    const brandOpt = (await page.$$eval("#fcScope option", os => os.map(o => o.value))).find(v => v.includes("manufacturer"));
+    assert(brandOpt, "범위에 브랜드 목록");
+    await page.selectOption("#fcScope", brandOpt);
+    await page.waitForTimeout(900);
+    assert(await page.isDisabled('#fcKind [data-kind="expense"]'), "브랜드 범위는 매출만");
+    assert(/브랜드/.test(await page.textContent("#fcChartTitle")), "브랜드 예측 제목");
+    await page.selectOption("#fcScope", "");
+    await page.selectOption("#fcHorizon", "12");
+    await page.waitForTimeout(900);
+    assert(await page.locator("#fcTable tbody tr").count() === 14, "12개월 예측표");
+    await page.selectOption("#fcHorizon", "6");
+    step("추세·예측: 이번 달 마감·다음 달·올해 예상, 범위 띠·계절성, 지출·영업이익, 브랜드 범위, 12개월");
+
+    // 9-3b) 브랜드·차종·수리 유형: 목록·교차표, 브랜드 누르면 좁혀 보기, 건수, 수리·서비스만, 엑셀
+    await tab(page, "mix");
+    await page.waitForTimeout(1200);
+    for (const id of ["mxBrand", "mxModel", "mxCategory"]) {
+      assert(await page.locator(`#${id} .rank-row`).count() >= 3, `${id} 목록`);
+    }
+    assert(await page.locator("#mxMatrix td.heat:not(.empty)").count() >= 4, "브랜드 × 수리 유형 표");
+    await shot(page, "mix");
+    const brand = (await page.textContent("#mxBrand .rank-row .rk-name")).trim();
+    await page.locator("#mxBrand .rank-row").first().click();
+    await page.waitForTimeout(300);
+    assert(await page.isVisible("#mxChips"), "조건 표시");
+    const models = await page.$$eval("#mxModel .rk-name", els => els.map(e => e.textContent.trim()));
+    assert(models.length && models.every(m => m.startsWith(brand)), `차종이 ${brand}만: ${models.slice(0, 3).join(", ")}`);
+    await page.click('#mxMeasure [data-measure="cnt"]');
+    await page.waitForTimeout(200);
+    assert((await page.textContent("#mxBrand .rk-val")).trim().endsWith("건"), "건수 기준");
+    await page.click('#mxScope [data-scope="서비스제공"]');
+    await page.waitForTimeout(900);
+    const cats = await page.$$eval("#mxCategory .rk-name", els => els.map(e => e.textContent.trim()));
+    assert(cats.length && !cats.some(c => ["스피커", "블랙박스", "카오디오", "앰프", "내비게이션"].includes(c)), "수리·서비스만: " + cats.join(","));
+    const [mxDl] = await Promise.all([page.waitForEvent("download"), page.click("#mxExport")]);
+    const mxPath = path.join(os.tmpdir(), "ui_" + mxDl.suggestedFilename());
+    await mxDl.saveAs(mxPath);
+    assert(fs.readFileSync(mxPath).subarray(0, 2).toString("latin1") === "PK", "브랜드·차종·수리 엑셀 파일");
+    await page.click('#mxChips [data-clear="brand"]');
+    await page.click('#mxScope [data-scope=""]');
+    await page.click('#mxMeasure [data-measure="sales"]');
+    await page.waitForTimeout(600);
+    assert(await page.isHidden("#mxChips"), "조건 지우기");
+    step(`브랜드·차종·수리 유형: 순위·추세선·교차표, ${brand} 눌러 차종 좁히기, 건수·수리만 보기, 엑셀 ${mxDl.suggestedFilename()}`);
+
     // 9-4) 매출·비용 분석: 브랜드 › 차종 피벗, 전기 대비, 엑셀로 받기
     await tab(page, "analysis");
     await page.waitForTimeout(600);
@@ -320,11 +401,16 @@ async function uploadExcel(page, file) {
     }
     step("사용자 추가: 김직원(직원), 세무사(조회 전용)");
 
-    // 11) 비밀번호 변경 대화상자 열고 닫기
+    // 11) 비밀번호 변경 대화상자 열고 닫기 (시험 계정은 비밀번호를 바꿀 수 없어 메뉴가 없음 — 데모의 admin)
     await page.click("#userBtn");
-    await page.click("#menuPassword");
-    assert(await page.isVisible("#pwDialog"), "비밀번호 변경 창");
-    await page.click("#pwDialog [data-close]");
+    if (await page.isVisible("#menuPassword")) {
+      await page.click("#menuPassword");
+      assert(await page.isVisible("#pwDialog"), "비밀번호 변경 창");
+      await page.click("#pwDialog [data-close]");
+    } else {
+      assert(/시험 계정/.test(await page.textContent("#userRole")), "비밀번호 변경 메뉴는 시험 계정만 숨김");
+      await page.click("#userBtn");
+    }
 
     // 12) 직원 로그인: 관리자 메뉴 숨김, 등록 폼 보임
     await logout(page);
@@ -351,15 +437,23 @@ async function uploadExcel(page, file) {
     await shot(page, "viewer_income");
     step("조회 전용 권한 화면 확인");
 
-    // 14) 모바일 폭
+    // 14) 휴대폰 폭: 아래쪽 메뉴·전체 메뉴로 모든 화면, 가로 넘침 없음, 내역은 카드
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const t of ["dashboard", "income", "balances", "report", "analysis", "targets"]) {
+    await page.waitForTimeout(300);
+    assert(await page.isVisible("#bottomNav") && !(await page.isVisible("#mainTabs")), "휴대폰은 아래쪽 메뉴");
+    for (const t of ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets", "data"]) {
       await tab(page, t);
+      await page.waitForTimeout(400);
+      assert(await page.isVisible(`#view-${t}`), `${t} 화면 (휴대폰)`);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert(overflow <= 1, `${t} 모바일 가로 넘침 ${overflow}px`);
       await shot(page, `mobile_${t}`);
     }
-    step("모바일 폭(390px) 가로 넘침 없음");
+    await tab(page, "income");
+    await page.waitForTimeout(500);
+    assert(await page.locator("#incList .entry-card").count() >= 1, "휴대폰 매출 내역은 카드");
+    assert(await page.locator("#incList table").count() === 0, "휴대폰은 표 대신 카드");
+    step("휴대폰 폭(390px): 아래쪽 메뉴·전체 메뉴로 10개 화면, 가로 넘침 없음, 내역 카드");
   } catch (e) {
     errors.push("테스트 중단: " + e.message);
     await shot(page, "zz_failure").catch(() => {});

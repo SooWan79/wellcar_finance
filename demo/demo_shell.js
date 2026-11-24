@@ -1,4 +1,5 @@
-/* 데모 화면 장치: 파일 저장(아티팩트 downloads 기능), '처음 상태로' 버튼, 데모 계정 바로 로그인 */
+/* 데모 화면 장치: 파일 저장(아티팩트 downloads 기능), '처음 상태로' 버튼.
+   데모 계정 바로 로그인은 앱의 '시험 계정으로 바로 들어가기'(mock_api.js의 test_accounts)가 맡는다. */
 (function () {
   "use strict";
 
@@ -37,12 +38,4 @@
     location.reload();
   });
 
-  // 3) 데모 계정 바로 로그인
-  document.addEventListener("click", e => {
-    const b = e.target.closest("[data-demo-login]");
-    if (!b) return;
-    document.getElementById("loginUser").value = b.dataset.demoLogin;
-    document.getElementById("loginPass").value = window.WellcarDemo.password;
-    document.getElementById("loginForm").requestSubmit();
-  });
 })();

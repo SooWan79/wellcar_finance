@@ -42,6 +42,15 @@ app.config.update(
     PERMANENT_SESSION_LIFETIME=timedelta(days=30),
     MAX_CONTENT_LENGTH=64 * 1024 * 1024,  # 엑셀 가져오기 JSON·백업 파일 업로드 상한
 )
+# 시험 계정: 시험용 서버에서만 켠다. 로그인 화면에 아이디·비밀번호가 그대로 보이므로 실제 장부가 든 서버에서는 켜지 말 것.
+# 끄고 다시 실행하면 시험 계정은 자동으로 사용 중지된다(_sync_test_accounts).
+TEST_ACCOUNTS_ENABLED = _env_flag("WELLCAR_TEST_ACCOUNTS")
+TEST_PASSWORD_DEFAULT = "test1234"
+TEST_ACCOUNTS = (  # (아이디, 권한, 이름)
+    ("test-admin", "admin", "시험 관리자"),
+    ("test-staff", "staff", "시험 직원"),
+    ("test-viewer", "viewer", "시험 조회"),
+)
 if _env_flag("WELLCAR_TRUST_PROXY"):
     # 클라우드 HTTPS 프록시 뒤에서 실제 접속 IP·프로토콜을 쓰기 위함 (프록시가 없을 때 켜면 IP 위조 가능)
     from werkzeug.middleware.proxy_fix import ProxyFix
@@ -160,6 +169,9 @@ COLUMN_MIGRATIONS = {
         ("updated_at", "TEXT DEFAULT ''"),
         ("source", "TEXT DEFAULT ''"),
         ("import_key", "TEXT DEFAULT ''"),
+    ],
+    "users": [
+        ("is_test", "INTEGER NOT NULL DEFAULT 0"),  # 1 = 로그인 화면에 보이는 시험 계정
     ],
 }
 
@@ -280,8 +292,9 @@ def init_db():
     _data_migrations(db)
     # 이 DB의 식별자: 내보낸 엑셀을 다시 올릴 때 '관리번호'가 이 DB의 번호인지 확인하는 데 쓴다
     db.execute("INSERT OR IGNORE INTO settings(key, value) VALUES ('instance_id', ?)", (secrets.token_hex(6),))
-    if db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0:
-        if not _bootstrap_admin_from_env(db):
+    _sync_test_accounts(db)
+    if _real_user_count(db) == 0:
+        if not _bootstrap_admin_from_env(db) and not TEST_ACCOUNTS_ENABLED:
             _announce_setup_code(db)
     db.commit()
     db.close()
@@ -317,6 +330,51 @@ def _create_user(db, username, password, role, display_name=""):
         "INSERT INTO users(username, display_name, password_hash, role) VALUES (?,?,?,?)",
         (username, display_name, generate_password_hash(password), role))
     return cur.lastrowid
+
+
+def _real_user_count(db):
+    """시험 계정을 뺀 사용자 수. 0이면 '처음 사용 설정'으로 첫 관리자를 만든다."""
+    return db.execute("SELECT COUNT(*) FROM users WHERE is_test=0").fetchone()[0]
+
+
+def test_password():
+    """시험 계정 비밀번호: WELLCAR_TEST_PASSWORD(8자 이상) 또는 기본값."""
+    pw = os.environ.get("WELLCAR_TEST_PASSWORD", "").strip()
+    if pw and not any(_validate_password(pw, u) for u, _r, _n in TEST_ACCOUNTS):
+        return pw
+    return TEST_PASSWORD_DEFAULT
+
+
+def _sync_test_accounts(db):
+    """WELLCAR_TEST_ACCOUNTS가 켜져 있으면 시험 계정을 만들거나 안내한 상태(권한·비밀번호)로 되돌리고,
+    꺼져 있으면 사용 중지한다(로그인 화면의 계정으로 아무나 들어오지 못하게)."""
+    if not TEST_ACCOUNTS_ENABLED:
+        n = db.execute("UPDATE users SET active=0, session_version=session_version+1 "
+                       "WHERE is_test=1 AND active=1").rowcount
+        if n:
+            print(f"[웰카오디오] 시험 계정 {n}개를 사용 중지했습니다(WELLCAR_TEST_ACCOUNTS가 꺼져 있음).",
+                  file=sys.stderr)
+        return
+    pw = test_password()
+    pw_hash = generate_password_hash(pw)
+    for username, role, name in TEST_ACCOUNTS:
+        row = db.execute("SELECT * FROM users WHERE username=?", (username,)).fetchone()
+        if row is None:
+            try:
+                db.execute("INSERT INTO users(username, display_name, password_hash, role, is_test) "
+                           "VALUES (?,?,?,?,1)", (username, name, pw_hash, role))
+            except sqlite3.IntegrityError:  # 동시에 뜬 다른 프로세스가 먼저 만듦
+                pass
+        elif not row["is_test"]:
+            print(f"[웰카오디오] '{username}'은 일반 계정이라 시험 계정으로 쓰지 않습니다.", file=sys.stderr)
+        else:
+            db.execute("UPDATE users SET display_name=?, password_hash=?, role=?, active=1 WHERE id=?",
+                       (name, pw_hash, role, row["id"]))
+    print("\n" + "!" * 64 +
+          "\n 시험 계정이 켜져 있습니다 (WELLCAR_TEST_ACCOUNTS)."
+          f"\n 로그인 화면에 시험 계정({', '.join(u for u, _r, _n in TEST_ACCOUNTS)} / {pw})이 보입니다."
+          "\n 실제 장부가 든 서버에서는 끄세요. 끄고 다시 실행하면 시험 계정은 사용 중지됩니다.\n" +
+          "!" * 64 + "\n", file=sys.stderr, flush=True)
 
 
 def _bootstrap_admin_from_env(db):
@@ -390,7 +448,7 @@ def user_public(row):
     return {"id": row["id"], "username": row["username"], "display_name": row["display_name"] or "",
             "name": user_label(row), "role": row["role"], "role_label": ROLE_LABELS.get(row["role"], ""),
             "active": bool(row["active"]), "last_login_at": row["last_login_at"] or "",
-            "created_at": row["created_at"] or ""}
+            "created_at": row["created_at"] or "", "is_test": bool(row["is_test"])}
 
 
 def current_user():
@@ -501,10 +559,17 @@ def security_headers(resp):
 @app.route("/api/auth/state")
 def auth_state():
     db = get_db()
-    setup_required = db.execute("SELECT COUNT(*) FROM users").fetchone()[0] == 0
+    setup_required = _real_user_count(db) == 0 and not TEST_ACCOUNTS_ENABLED
     user = current_user()
-    return jsonify({"setup_required": setup_required,
-                    "user": user_public(user) if user else None})
+    tests = []
+    if TEST_ACCOUNTS_ENABLED:  # 로그인 화면의 '시험 계정으로 바로 들어가기'
+        pw = test_password()
+        tests = [{"username": r["username"], "password": pw, "name": user_label(r), "role": r["role"],
+                  "role_label": ROLE_LABELS.get(r["role"], "")}
+                 for r in db.execute("SELECT * FROM users WHERE is_test=1 AND active=1 "
+                                     "ORDER BY CASE role WHEN 'admin' THEN 0 WHEN 'staff' THEN 1 ELSE 2 END, id")]
+    return jsonify({"setup_required": setup_required, "test_mode": TEST_ACCOUNTS_ENABLED,
+                    "test_accounts": tests, "user": user_public(user) if user else None})
 
 
 _DUMMY_HASH = generate_password_hash(secrets.token_hex(8))
@@ -544,7 +609,7 @@ def setup_first_admin():
     db = get_db()
     db.execute("BEGIN IMMEDIATE")
     try:
-        if db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+        if _real_user_count(db):
             return jsonify({"error": "이미 관리자 계정이 있습니다. 로그인하세요."}), 409
         expected = (get_setting(db, "setup_code") or "").replace("-", "")
         given = re.sub(r"[\s-]", "", str(body.get("setup_code") or "")).upper()
@@ -581,6 +646,8 @@ def change_password():
     body = json_body()
     current = str(body.get("current_password") or "")[:MAX_PASSWORD + 1]
     new = str(body.get("new_password") or "")
+    if user["is_test"]:
+        return jsonify({"error": "시험 계정은 비밀번호를 바꿀 수 없습니다."}), 403
     key = f"password:{user['id']}"
     if _recent_failures(key) >= 5:
         return jsonify({"error": "현재 비밀번호를 여러 번 틀렸습니다. 10분 뒤에 다시 시도하세요."}), 429
@@ -645,6 +712,8 @@ def update_user(uid):
     if not row:
         return jsonify({"error": "해당 사용자가 없습니다."}), 404
     me = current_user()
+    if me["is_test"] and not row["is_test"]:
+        return jsonify({"error": "시험 계정으로는 실제 계정을 바꿀 수 없습니다."}), 403
     sets, args = [], []
     if "display_name" in body:
         sets.append("display_name=?")
@@ -662,6 +731,8 @@ def update_user(uid):
         return jsonify({"error": "관리자가 최소 한 명은 있어야 합니다."}), 400
     sets += ["role=?", "active=?"]
     args += [role, int(active)]
+    if body.get("password") and row["is_test"]:
+        return jsonify({"error": "시험 계정의 비밀번호는 바꿀 수 없습니다(로그인 화면에 안내된 값 유지)."}), 403
     if body.get("password"):
         err = _validate_password(str(body["password"]), row["username"])
         if err:
@@ -684,6 +755,8 @@ def delete_user(uid):
         return jsonify({"error": "해당 사용자가 없습니다."}), 404
     if uid == current_user()["id"]:
         return jsonify({"error": "본인 계정은 삭제할 수 없습니다."}), 400
+    if current_user()["is_test"] and not row["is_test"]:
+        return jsonify({"error": "시험 계정으로는 실제 계정을 지울 수 없습니다."}), 403
     if row["role"] == "admin" and row["active"] and not _other_active_admins(db, uid):
         return jsonify({"error": "관리자가 최소 한 명은 있어야 합니다."}), 400
     db.execute("DELETE FROM users WHERE id=?", (uid,))

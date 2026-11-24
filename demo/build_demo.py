@@ -48,17 +48,6 @@ BANNER = """<div class="demo-banner" role="note">
 </div>
 """
 
-ACCOUNTS = """
-    <div class="demo-accounts">
-      <p class="demo-accounts-title">데모 계정으로 바로 들어가기 <span>비밀번호는 모두 demo1234</span></p>
-      <div class="demo-accounts-row">
-        <button type="button" class="btn small" data-demo-login="admin">관리자 · 사장</button>
-        <button type="button" class="btn small" data-demo-login="staff">직원 · 김직원</button>
-        <button type="button" class="btn small" data-demo-login="viewer">조회 전용 · 세무사</button>
-      </div>
-    </div>
-"""
-
 DEMO_CSS = """
 /* ---------------- 데모 전용 ---------------- */
 .demo-banner {
@@ -68,13 +57,6 @@ DEMO_CSS = """
 }
 .demo-banner b { color: var(--accent-ink); margin-right: 4px; }
 .demo-banner .btn { padding: 3px 10px; font-size: var(--fs-micro); }
-.demo-accounts {
-  margin-top: 18px; padding-top: 16px; border-top: 1px solid var(--hairline);
-  display: flex; flex-direction: column; gap: 8px;
-}
-.demo-accounts-title { margin: 0; font-size: var(--fs-sm); font-weight: 700; color: var(--ink-2); }
-.demo-accounts-title span { font-weight: 500; color: var(--ink-3); margin-left: 6px; }
-.demo-accounts-row { display: flex; flex-wrap: wrap; gap: 6px; }
 """
 
 # mock_api.js가 xlsx_writer.js(XlsxWriter)를 쓰므로 그 뒤에, 화면 스크립트보다 앞에 둔다
@@ -86,6 +68,7 @@ SCRIPTS = [
     ("static", "js", "metrics.js"),
     ("static", "js", "charts.js"),
     ("static", "js", "reports.js"),
+    ("static", "js", "insights.js"),
     ("static", "js", "app.js"),
 ]
 
@@ -96,10 +79,6 @@ def build():
     body = re.sub(r"\s*<script src=\"[^\"]+\"></script>", "", body)
 
     body = replace_once(body, '<div id="appShell" hidden>\n', '<div id="appShell" hidden>\n' + BANNER)
-    body = replace_once(body, '      <p class="auth-error" id="loginError" role="alert"></p>\n    </form>\n',
-                        '      <p class="auth-error" id="loginError" role="alert"></p>\n    </form>\n' + ACCOUNTS)
-    body = replace_once(body, "계정이 없으면 관리자에게 만들어 달라고 요청하세요.",
-                        "데모입니다. 아래 버튼을 누르거나 admin / demo1234로 로그인하세요.")
     # 데모 백업은 이 브라우저 안의 JSON 스냅숏이다
     body = replace_once(body, 'accept=".db,.sqlite,.sqlite3"', 'accept=".json,application/json"')
 

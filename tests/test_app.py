@@ -180,6 +180,79 @@ class AuthTest(Base):
         self.put(self.c, f"/api/users/{uid}", {"active": True})
 
 
+class TestAccountsTest(Base):
+    """WELLCAR_TEST_ACCOUNTS: 로그인 화면에 보이는 시험 계정 (시험용 서버 전용)"""
+
+    def sync(self, enabled):
+        wellcar.TEST_ACCOUNTS_ENABLED = enabled
+        db = sqlite3.connect(wellcar.DB_PATH)
+        db.row_factory = sqlite3.Row
+        try:
+            wellcar._sync_test_accounts(db)
+            db.commit()
+        finally:
+            db.close()
+
+    def tearDown(self):
+        self.sync(False)
+
+    def test_listed_on_login_screen_and_limited(self):
+        self.sync(True)
+        anon = wellcar.app.test_client()
+        st = anon.get("/api/auth/state").get_json()
+        self.assertTrue(st["test_mode"])
+        self.assertFalse(st["setup_required"])
+        self.assertEqual([a["username"] for a in st["test_accounts"]], ["test-admin", "test-staff", "test-viewer"])
+        self.assertEqual([a["role"] for a in st["test_accounts"]], ["admin", "staff", "viewer"])
+        pw = st["test_accounts"][0]["password"]
+        self.assertEqual(pw, "test1234")
+        staff = self.client("test-staff", pw)
+        me = staff.get("/api/auth/state").get_json()["user"]
+        self.assertEqual((me["role"], me["is_test"]), ("staff", True))
+        self.income(staff)  # 직원 권한대로 등록 가능
+        # 비밀번호는 바꿀 수 없다(로그인 화면 안내가 틀리지 않게)
+        r = self.post(staff, "/api/auth/password", {"current_password": pw, "new_password": "other-pass-1"})
+        self.assertEqual(r.status_code, 403)
+        # 시험 관리자는 실제 계정을 바꾸거나 지울 수 없다
+        tadmin = self.client("test-admin", pw)
+        real = next(u for u in tadmin.get("/api/users").get_json() if u["username"] == "admin")
+        self.assertFalse(real["is_test"])
+        self.assertEqual(self.put(tadmin, f"/api/users/{real['id']}", {"role": "viewer"}).status_code, 403)
+        self.assertEqual(self.delete(tadmin, f"/api/users/{real['id']}").status_code, 403)
+        # 끄면(다시 실행) 목록에서 사라지고 로그인도 끊긴다
+        self.sync(False)
+        st = anon.get("/api/auth/state").get_json()
+        self.assertEqual((st["test_mode"], st["test_accounts"]), (False, []))
+        self.assertEqual(staff.get("/api/meta").status_code, 401)
+        r = self.post(anon, "/api/auth/login", {"username": "test-staff", "password": pw})
+        self.assertEqual(r.status_code, 403)
+
+    def test_restart_restores_role_and_password(self):
+        self.sync(True)
+        uid = next(u["id"] for u in self.c.get("/api/users").get_json() if u["username"] == "test-viewer")
+        r = self.put(self.c, f"/api/users/{uid}", {"password": "changed-pass-1"})
+        self.assertEqual(r.status_code, 403)  # 시험 계정 비밀번호는 관리자도 못 바꿈
+        self.assertEqual(self.put(self.c, f"/api/users/{uid}", {"role": "admin"}).status_code, 200)
+        self.sync(True)
+        st = wellcar.app.test_client().get("/api/auth/state").get_json()
+        viewer = next(a for a in st["test_accounts"] if a["username"] == "test-viewer")
+        self.assertEqual(viewer["role"], "viewer")
+        self.client("test-viewer", "test1234")
+
+    def test_setup_still_needed_when_only_test_accounts(self):
+        db = sqlite3.connect(wellcar.DB_PATH)
+        db.row_factory = sqlite3.Row
+        try:
+            self.sync(True)
+            self.assertGreater(wellcar._real_user_count(db), 0)  # 실제 관리자(admin)가 있음
+            n_test = db.execute("SELECT COUNT(*) FROM users WHERE is_test=1").fetchone()[0]
+            self.assertEqual(n_test, 3)
+            self.assertEqual(wellcar._real_user_count(db),
+                             db.execute("SELECT COUNT(*) FROM users").fetchone()[0] - n_test)
+        finally:
+            db.close()
+
+
 class EntryTest(Base):
     def test_crud_and_get(self):
         row = self.income()

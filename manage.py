@@ -38,8 +38,9 @@ def cmd_list_users(_args, db):
         print("사용자가 없습니다. 브라우저로 접속해 처음 설정을 하거나 create-user로 만드세요.")
     for r in rows:
         state = "사용 중" if r["active"] else "사용 중지"
+        test = " [시험 계정]" if r["is_test"] else ""
         print(f"{r['id']:>3}  {r['username']:<16} {wellcar.ROLE_LABELS.get(r['role'], r['role']):<6} "
-              f"{state:<6} {r['display_name'] or ''}  (마지막 로그인 {r['last_login_at'] or '-'})")
+              f"{state:<6} {r['display_name'] or ''}{test}  (마지막 로그인 {r['last_login_at'] or '-'})")
 
 
 def cmd_create_user(args, db):
@@ -72,7 +73,7 @@ def cmd_backup(_args, _db):
 
 
 def cmd_setup_code(_args, db):
-    if db.execute("SELECT COUNT(*) FROM users").fetchone()[0]:
+    if wellcar._real_user_count(db):
         print("이미 사용자가 있어 설정 코드가 필요 없습니다. 비밀번호를 잊었다면 reset-password를 쓰세요.")
         return
     print("설정 코드:", wellcar.get_setting(db, "setup_code"))

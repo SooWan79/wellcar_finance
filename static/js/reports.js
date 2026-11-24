@@ -108,9 +108,9 @@
     }
 
     function metricsTable(K, KP, KL, T, o) {
-      const head = `<tr><th>지표</th><th class="num">이번 기간</th><th class="num">${o.prevLabel}</th><th class="num">증감</th>` +
-        (o.showLy ? `<th class="num">전년 동기</th><th class="num">증감</th>` : "") +
-        `<th class="num">${o.targetLabel}</th><th class="num">달성률</th></tr>`;
+      const head = `<tr><th>지표</th><th class="num">이번 기간</th><th class="num abs">${o.prevLabel}</th><th class="num"><span class="only-narrow">${o.prevLabel} </span>증감</th>` +
+        (o.showLy ? `<th class="num abs">전년 동기</th><th class="num"><span class="only-narrow">전년 </span>증감</th>` : "") +
+        `<th class="num abs">${o.targetLabel}</th><th class="num">달성률</th></tr>`;
       const body = METRIC_ROWS.map(def => {
         const cur = K[def.key], p = KP ? KP[def.key] : null, l = KL ? KL[def.key] : null;
         const up = def.up === null ? true : def.up;
@@ -120,9 +120,9 @@
         const cls = def.strong ? "strong-row" : def.sub ? "sub-row" : "";
         return `<tr class="${cls}"><td class="metric-name">${def.label}${def.hint ? ` <span class="muted hint">${def.hint}</span>` : ""}</td>` +
           `<td class="num strong">${fmtMetric(cur, def.fmt)}</td>` +
-          `<td class="num">${KP ? fmtMetric(p, def.fmt) : dash}</td><td class="num">${KP ? chip(p) : dash}</td>` +
-          (o.showLy ? `<td class="num">${KL ? fmtMetric(l, def.fmt) : dash}</td><td class="num">${KL ? chip(l) : dash}</td>` : "") +
-          `<td class="num">${def.target ? wonOrDash(tgt === null ? null : Math.round(tgt)) : ""}</td>` +
+          `<td class="num abs">${KP ? fmtMetric(p, def.fmt) : dash}</td><td class="num">${KP ? chip(p) : dash}</td>` +
+          (o.showLy ? `<td class="num abs">${KL ? fmtMetric(l, def.fmt) : dash}</td><td class="num">${KL ? chip(l) : dash}</td>` : "") +
+          `<td class="num abs">${def.target ? wonOrDash(tgt === null ? null : Math.round(tgt)) : ""}</td>` +
           `<td class="num">${def.target ? achChip(ach, def.tk) : ""}</td></tr>`;
       }).join("");
       return `<table class="data metrics-table"><thead>${head}</thead><tbody>${body}</tbody></table>`;

@@ -331,6 +331,188 @@
     return { from: addDays(from, -len), to: addDays(from, -1) };
   }
 
+  // ---------------------------------------------------------------- 추세·예측
+  /*
+   * 끝난 달들의 월별 값으로 앞으로의 달을 예상한다. 쌓인 기간에 따라 방법을 고른다.
+   *   12개월 이상: 추세(직선) × 계절 지수 — 같은 달끼리의 (값 ÷ 추세) 평균, 관측이 적으면 1 쪽으로 줄여 잡음을 덜어 냄
+   *   3~11개월   : 추세(직선)만 — 계절성은 1년치가 없어 알 수 없음
+   *   1~2개월    : 평균
+   * 추세는 멀리 갈수록 조금씩 누그러뜨린다(감쇠 0.95/월). 범위는 80% 예측 구간(회귀 잔차 기준, 최소 ±4%).
+   */
+  const mean = a => (a.length ? a.reduce((x, y) => x + y, 0) / a.length : 0);
+  const Z80 = 1.2816;
+  const SEASON_SHRINK = 0.5;   // 계절 지수: 관측 n개면 (지수 − 1) × n/(n + 0.5)
+  const DAMP = 0.95;           // 추세 감쇠
+  const TREND_WINDOW = 36;     // 추세는 최근 36개월로 맞춘다
+
+  /** 'YYYY-MM' 더하기 */
+  function addMonthKey(key, n) {
+    const [y, m] = key.split("-").map(Number);
+    const t = y * 12 + (m - 1) + n;
+    return `${Math.floor(t / 12)}-${pad2(t % 12 + 1)}`;
+  }
+  function monthKeys(fromKey, toKey) {
+    const out = [];
+    for (let k = fromKey; k <= toKey && out.length < 1200; k = addMonthKey(k, 1)) out.push(k);
+    return out;
+  }
+
+  /** 최소제곱 직선 y = a + b·x */
+  function ols(xs, ys) {
+    const n = xs.length, mx = mean(xs), my = mean(ys);
+    let sxx = 0, sxy = 0;
+    for (let i = 0; i < n; i++) { sxx += (xs[i] - mx) ** 2; sxy += (xs[i] - mx) * (ys[i] - my); }
+    const b = sxx ? sxy / sxx : 0, a = my - b * mx;
+    let sse = 0;
+    for (let i = 0; i < n; i++) sse += (ys[i] - a - b * xs[i]) ** 2;
+    return { a, b, n, mx, sxx, sigma: n > 2 ? Math.sqrt(sse / (n - 2)) : null };
+  }
+
+  /** 모형 맞추기 (내부용). ys: 0이 아닌 달부터, fm: ys[0]의 달(1~12) */
+  function fitModel(ys, fm) {
+    const n = ys.length;
+    const monthOf = i => ((fm - 1 + i) % 12) + 1;
+    const nonneg = ys.every(v => v >= 0);
+    const S = Array(13).fill(1);
+    const w0 = Math.max(0, n - TREND_WINDOW);
+    const xs = ys.map((_, i) => i).slice(w0);
+    const trendOn = vals => ols(xs, vals.slice(w0));
+    if (n < 3) {
+      const avg = mean(ys);
+      const sd = n > 1 ? Math.sqrt(ys.reduce((a, v) => a + (v - avg) ** 2, 0) / (n - 1)) : 0;
+      return { method: "average", a: avg, b: 0, n, mx: 0, sxx: 0, sigma: Math.max(sd, Math.abs(avg) * 0.2), S: null, monthOf };
+    }
+    let fit = trendOn(ys);
+    const seasonal = n >= 12 && nonneg && mean(ys) > 0;
+    if (seasonal) {
+      for (let iter = 0; iter < 5; iter++) {
+        const sum = Array(13).fill(0), cnt = Array(13).fill(0);
+        ys.forEach((v, i) => {
+          const tr = fit.a + fit.b * i;
+          if (tr > 0) { sum[monthOf(i)] += v / tr; cnt[monthOf(i)]++; }
+        });
+        for (let m = 1; m <= 12; m++) {
+          const raw = cnt[m] ? sum[m] / cnt[m] : 1;
+          S[m] = 1 + (raw - 1) * (cnt[m] / (cnt[m] + SEASON_SHRINK));
+        }
+        const avgS = mean(S.slice(1));
+        for (let m = 1; m <= 12; m++) S[m] /= avgS;
+        fit = trendOn(ys.map((v, i) => v / S[monthOf(i)]));
+      }
+    }
+    return Object.assign(fit, { method: seasonal ? "seasonal" : "trend", S: seasonal ? S.slice() : null, monthOf });
+  }
+
+  /** 맞춘 모형으로 마지막 달 다음 h개월 (감쇠 추세) */
+  function projectModel(model, ys, horizon, sigmaFloor) {
+    const n = ys.length, last = n - 1;
+    const level = model.a + model.b * last;
+    const sigma = Math.max(model.sigma || 0, sigmaFloor || 0);
+    const out = [];
+    let damp = 0;
+    for (let h = 1; h <= horizon; h++) {
+      damp += DAMP ** h;
+      const t = last + damp;  // 감쇠한 시점
+      const s = model.S ? model.S[model.monthOf(last + h)] : 1;
+      const mid = (model.method === "average" ? model.a : model.a + model.b * t) * s;
+      const spread = model.sxx ? Math.sqrt(1 + 1 / model.n + (t - model.mx) ** 2 / model.sxx) : Math.sqrt(1 + h / 6);
+      const hw = Z80 * sigma * spread * s;
+      out.push({ h, mean: mid, hw });
+    }
+    return { level, sigma, points: out };
+  }
+
+  /**
+   * 월별 예측. values: 끝난 달의 값(오래된 순), firstMonth: values[0]의 달(1~12).
+   * opts: {horizon (기본 6), nonNegative (기본 true), backtest (기본 true)}
+   * 반환: {method, methodLabel, n, forecast: [{h, mean, lo, hi, hw}], seasonal: [12개 지수]|null,
+   *        slopePct(월 추세 %), level, backtest: {mape, n}|null}
+   */
+  function forecastSeries(values, firstMonth, opts) {
+    opts = opts || {};
+    const horizon = opts.horizon || 6;
+    const nonNeg = opts.nonNegative !== false;
+    let start = 0;
+    while (start < values.length && !values[start]) start++;  // 기록을 시작하기 전(0인 달)은 뺀다
+    const ys = values.slice(start).map(Number);
+    const fm = ((firstMonth - 1 + start) % 12) + 1;
+    const n = ys.length;
+    const LABEL = { seasonal: "추세 + 계절성", trend: "추세", average: "평균", none: "자료 없음" };
+    if (!n) return { method: "none", methodLabel: LABEL.none, n: 0, forecast: [], seasonal: null, slopePct: null, level: 0, backtest: null };
+    const model = fitModel(ys, fm);
+    // 지난 h개월을 빼고 맞춘 모형이 그 h개월을 얼마나 맞혔는지 (평균 절대 백분율 오차)
+    let bt = null;
+    const hb = Math.min(6, n - 6);
+    if (opts.backtest !== false && hb >= 3) {
+      const train = ys.slice(0, n - hb);
+      const tm = fitModel(train, fm);
+      const pr = projectModel(tm, train, hb, 0).points;
+      const apes = [], errs = [];
+      for (let i = 0; i < hb; i++) {
+        const actual = ys[n - hb + i];
+        const pred = nonNeg ? Math.max(0, pr[i].mean) : pr[i].mean;
+        errs.push(pred - actual);
+        if (actual > 0) apes.push(Math.abs(pred - actual) / actual);
+      }
+      if (apes.length) bt = { mape: mean(apes) * 100, n: apes.length, rmse: Math.sqrt(mean(errs.map(e => e * e))) };
+    }
+    const levelNow = Math.abs(model.a + model.b * (n - 1));
+    const floor = Math.max(levelNow * 0.04, bt ? bt.rmse * 0.6 : 0);
+    const proj = projectModel(model, ys, horizon, floor);
+    const forecast = proj.points.map(p => {
+      const mid = nonNeg ? Math.max(0, p.mean) : p.mean;
+      return { h: p.h, mean: mid, hw: p.hw, lo: nonNeg ? Math.max(0, mid - p.hw) : mid - p.hw, hi: mid + p.hw };
+    });
+    return {
+      method: model.method, methodLabel: LABEL[model.method], n, start,
+      forecast,
+      seasonal: model.S ? model.S.slice(1) : null,
+      slopePct: model.method !== "average" && proj.level > 0 ? model.b / proj.level * 100 : null,
+      level: proj.level, sigma: proj.sigma, backtest: bt,
+    };
+  }
+
+  /** 두 예측의 차(영업이익 = 매출 − 지출). 범위는 서로 독립이라 보고 합친다 */
+  function diffForecast(fa, fb) {
+    return fa.map((p, i) => {
+      const q = fb[i] || { mean: 0, hw: 0 };
+      const mid = p.mean - q.mean, hw = Math.sqrt(p.hw ** 2 + q.hw ** 2);
+      return { h: p.h, mean: mid, hw, lo: mid - hw, hi: mid + hw };
+    });
+  }
+
+  /**
+   * 진행 중인 달의 마감 예상 = 오늘까지 실적 + 남은 기간의 평소 몫.
+   * 평소 몫: 지난 달들에서 같은 시점(달 길이 비율)까지 쌓인 비율(p)로 남은 비율(1 − p)을 정하고,
+   *          그달 예측값(monthMean)에 곱한다. 예측값이 없으면 지금 속도(실적 ÷ p)로 본다.
+   * opts: {mtd, today, history: [[일별 값...], ...] (지난 달들), monthMean, monthHw}
+   */
+  function monthLanding(opts) {
+    const { mtd, today } = opts;
+    const [y, m, d] = ymd(today);
+    const D = daysInMonth(y, m);
+    const shares = [];
+    for (const days of opts.history || []) {
+      const total = days.reduce((a, v) => a + (Number(v) || 0), 0);
+      if (!(total > 0)) continue;
+      const upto = Math.min(days.length, Math.max(1, Math.round(d * days.length / D)));
+      let cum = 0;
+      for (let i = 0; i < upto; i++) cum += Number(days[i]) || 0;
+      shares.push(cum / total);
+    }
+    let p = shares.length >= 2 ? mean(shares) : d / D;
+    p = d >= D ? 1 : Math.min(0.98, Math.max(0.02, p));
+    const pace = mtd > 0 && p >= 0.1 ? mtd / p : null;
+    const hasModel = opts.monthMean !== null && opts.monthMean !== undefined;
+    let est;
+    if (hasModel) est = mtd + (1 - p) * Math.max(0, opts.monthMean);
+    else est = pace !== null ? pace : null;
+    if (est === null) return { mean: null, lo: null, hi: null, share: p, pace, mtd, day: d, days: D };
+    est = Math.max(est, mtd);
+    const hw = hasModel && opts.monthHw ? opts.monthHw * (1 - p) : est * 0.15 * (1 - p);
+    return { mean: est, hw, lo: Math.max(mtd, est - hw), hi: est + hw, share: p, pace, mtd, day: d, days: D };
+  }
+
   const api = {
     UNITS, UNIT_LABEL, PREV_LABEL, WEEKDAY_KO,
     addDays, addMonths, addYears, diffDays, daysInMonth, weekdayIdx, isoWeek, md,
@@ -338,6 +520,7 @@
     INC_KEYS, EXP_KEYS, sumRange, derive, metricsFor, pctChange,
     targetFor, achievement, buckets,
     colKey, colLabel, colKeys, timeGroupFor, pivot, compareRange,
+    addMonthKey, monthKeys, ols, forecastSeries, diffForecast, monthLanding,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WellcarMetrics = api;

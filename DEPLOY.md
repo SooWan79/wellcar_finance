@@ -186,6 +186,8 @@ python manage.py reset-password 아이디
 | `WELLCAR_HTTPS` | `1`이면 HTTPS에서만 로그인 쿠키 전송 | 꺼짐 |
 | `WELLCAR_TRUST_PROXY` | `1`이면 프록시가 알려 준 실제 IP 사용 | 꺼짐 |
 | `WELLCAR_ADMIN_USER` / `WELLCAR_ADMIN_PASSWORD` | 첫 관리자 자동 생성 | 없음 |
+| `WELLCAR_TEST_ACCOUNTS` | `1`이면 시험 계정 3개를 만들고 로그인 화면에 보여 줌 (**시험용 서버에서만**) | 꺼짐 |
+| `WELLCAR_TEST_PASSWORD` | 시험 계정 비밀번호 (8자 이상) | `test1234` |
 
 ### 6) 보안 점검표
 
@@ -193,6 +195,7 @@ python manage.py reset-password 아이디
 - 같은 아이디·같은 IP로 5번 틀리면 10분간 로그인이 막힙니다.
 - 외부에 알리는 주소는 **https** 주소만 쓰세요.
 - 퇴사·역할 변경은 바로 **사용자관리**에 반영하세요. 사용 중지하면 그 사람의 로그인이 즉시 끊깁니다.
+- 실제 장부가 든 서버에서는 `WELLCAR_TEST_ACCOUNTS`를 켜지 마세요. 로그인 화면에 시험 계정의 비밀번호가 보입니다.
 
 ### 7) 휴대폰에서 쓰기 (홈 화면에 추가)
 
@@ -217,3 +220,30 @@ python manage.py reset-password 아이디
 5. 엑셀이 원본이고 시스템을 엑셀과 똑같이 맞추고 싶다면(엑셀에서 지운 줄도 삭제) 관리자가
    **엑셀 장부와 맞추기**를 골라 올립니다. 화면에서 직접 입력한 내역은 지워지지 않습니다.
 6. 매달 초에 지난달 **엑셀 내보내기** 파일을 받아 두면 세무사 전달·보관용으로 그대로 쓸 수 있습니다.
+
+### 9) 시험용 서버 — 로그인 화면에 시험 계정 두기
+
+직원·세무사·동업자가 미리 써 보게 하려면 **실제 장부와 다른 DB**로 시험용 서버를 하나 더 띄우고 시험 계정을 켭니다.
+
+```
+WELLCAR_DB=시험.db WELLCAR_TEST_ACCOUNTS=1 python seed_demo.py   # (선택) 샘플 장부 채우기
+WELLCAR_DB=시험.db WELLCAR_TEST_ACCOUNTS=1 python app.py
+```
+
+- PythonAnywhere라면 시험용 웹 앱의 WSGI 파일에 `os.environ["WELLCAR_TEST_ACCOUNTS"] = "1"`과
+  시험용 `WELLCAR_DB` 경로를 넣고 Reload 합니다. 윈도 PC라면 `start_windows.bat`에 `set WELLCAR_TEST_ACCOUNTS=1`을 넣습니다.
+- 로그인 화면 맨 위에 **'시험 계정으로 바로 들어가기'**가 나오고, 누르면 바로 로그인됩니다.
+
+| 시험 계정 | 권한 | 비밀번호 |
+|---|---|---|
+| `test-admin` (시험 관리자) | 관리자 | `test1234` (`WELLCAR_TEST_PASSWORD`로 변경) |
+| `test-staff` (시험 직원) | 직원 | 같음 |
+| `test-viewer` (시험 조회) | 조회 전용 | 같음 |
+
+- 시험 계정은 비밀번호를 바꿀 수 없고, 실제 계정을 바꾸거나 지울 수 없습니다. 서버를 다시 실행할 때마다
+  권한·비밀번호가 위 표대로 되돌아갑니다.
+- 시험이 끝나면 `WELLCAR_TEST_ACCOUNTS`를 지우고 다시 실행하세요. 시험 계정은 **자동으로 사용 중지**되고
+  로그인 화면에서도 사라집니다. 시험 모드에서 시험 관리자로 만든 계정(실제 계정)은 그대로 남습니다.
+- 시험 모드에서는 '처음 사용 설정' 화면이 나오지 않습니다. 실제 관리자는 시험 관리자로 들어가 사용자관리에서
+  만들거나, 시험 모드를 끈 뒤 처음 사용 설정을 하세요.
+

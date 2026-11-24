@@ -1,7 +1,8 @@
 /* 경량 SVG 차트 (외부 라이브러리 없이 동작)
    - groupedBars: 묶음 막대(+ 목표 같은 기준선 표시), 음수 지원
-   - lines: 꺾은선(누적 손익 등), 십자선 툴팁, 음수 지원
+   - lines: 꺾은선(누적 손익·예측 등), 십자선 툴팁, 음수 지원, 예측 범위 띠·구분선
    - hBars: 항목별 가로 막대(비중)
+   - spark: 표 안에 넣는 작은 추세선(SVG 문자열)
    색은 호출하는 쪽이 디자인 토큰(--series-*)에서 읽어 넘긴다. 글자는 항상 글자색 토큰을 쓴다. */
 (function () {
   "use strict";
@@ -64,7 +65,12 @@
     t.style.left = x + "px";
     t.style.top = y + "px";
   }
-  function hideTip() { tooltip().hidden = true; }
+  function hideTip() { const t = tooltip(); if (t) t.hidden = true; }
+  // 휴대폰: 누르면 뜬 툴팁이 남지 않게 스크롤하거나 차트 밖을 누르면 닫는다
+  window.addEventListener("scroll", hideTip, { passive: true });
+  document.addEventListener("touchstart", e => {
+    if (!(e.target.closest && e.target.closest("svg, .hbar-row"))) hideTip();
+  }, { passive: true });
 
   /** 범례: 막대는 네모, 선은 짧은 선, 목표선은 짧은 눈금 */
   function legend(container, items) {
@@ -74,7 +80,7 @@
       const key = document.createElement("span");
       key.className = "key";
       const sw = document.createElement("span");
-      sw.className = "swatch" + (it.shape === "line" ? " line" : it.shape === "tick" ? " tick" : "") + (it.dashed ? " dashed" : "");
+      sw.className = "swatch" + (it.shape === "line" ? " line" : it.shape === "tick" ? " tick" : it.shape === "band" ? " band" : "") + (it.dashed ? " dashed" : "");
       sw.style.background = it.dashed ? "transparent" : it.color;
       if (it.dashed) sw.style.borderColor = it.color;
       key.appendChild(sw);
@@ -91,7 +97,7 @@
     return { W, H: W < 600 ? 230 : 300, narrow: W < 600 };
   }
 
-  function axes(svg, m, iw, ih, scale, y) {
+  function axes(svg, m, iw, ih, scale, y, tickFmt) {
     for (const tv of scale.ticks) {
       const gy = y(tv);
       svg.appendChild(el("line", {
@@ -99,7 +105,7 @@
         stroke: tv === 0 ? "var(--baseline)" : "var(--grid-line)", "stroke-width": 1,
       }));
       const lbl = el("text", { x: m.left - 8, y: gy + 4, "text-anchor": "end", "font-size": 11, fill: "var(--ink-3)" });
-      lbl.textContent = fmtTick(tv);
+      lbl.textContent = (tickFmt || fmtTick)(tv);
       svg.appendChild(lbl);
     }
   }
@@ -140,7 +146,7 @@
     const all = series.flatMap(s => s.values).concat(mk ? mk.values : []).filter(v => v !== null && v !== undefined);
     const scale = niceScale(Math.min(0, ...all), Math.max(0, ...all), 4);
     const y = v => m.top + ih - (v - scale.lo) / (scale.hi - scale.lo) * ih;
-    axes(svg, m, iw, ih, scale, y);
+    axes(svg, m, iw, ih, scale, y, opts.tickFmt);
 
     const n = labels.length, sn = series.length;
     const slot = iw / n;
@@ -175,8 +181,8 @@
       const hit = el("rect", { x: gx, y: m.top, width: slot, height: ih, fill: "transparent" });
       hit.addEventListener("mousemove", evt => {
         hover.setAttribute("opacity", 1);
-        const rows = series.map(s => ({ name: s.name, color: s.color, value: s.values[i] }));
-        if (mk) rows.push({ name: mk.name, color: mk.color, value: mk.values[i], shape: "tick" });
+        const rows = series.map(s => ({ name: s.name, color: s.color, value: s.values[i], fmt: opts.valueFmt }));
+        if (mk) rows.push({ name: mk.name, color: mk.color, value: mk.values[i], shape: "tick", fmt: opts.valueFmt });
         showTip(evt, opts.titleFn ? opts.titleFn(lab, i) : lab, rows);
       });
       hit.addEventListener("mouseleave", () => { hover.setAttribute("opacity", 0); hideTip(); });
@@ -192,7 +198,9 @@
 
   /**
    * 꺾은선 차트. series: [{name, color, values:[숫자|null], dashed?}] — null이 나오면 그 뒤는 그리지 않음(진행 중 기간).
-   * opts: {xLabelFn, xTickEvery, titleFn, ariaLabel}
+   * opts: {xLabelFn, xTickEvery, titleFn, ariaLabel, valueFmt, tickFmt,
+   *        band: {name, color, lo:[], hi:[]} (예측 범위 띠), divider: {index, label} (예측 시작 세로선),
+   *        tipExtra: i => [{name, color, value, fmt}] (툴팁에 덧붙일 줄)}
    */
   function lines(container, labels, series, opts) {
     opts = opts || {};
@@ -202,7 +210,10 @@
       container.innerHTML = '<p class="empty-msg">표시할 데이터가 없습니다.</p>';
       return;
     }
-    if (series.length >= 2) legend(container, series.map(s => ({ name: s.name, color: s.color, shape: "line", dashed: s.dashed })));
+    const band = opts.band && opts.band.lo.some(v => v !== null && v !== undefined) ? opts.band : null;
+    const legendItems = series.map(s => ({ name: s.name, color: s.color, shape: "line", dashed: s.dashed }));
+    if (band) legendItems.push({ name: band.name, color: band.color, shape: "band" });
+    if (legendItems.length >= 2) legend(container, legendItems);
 
     const { W, H, narrow } = frame(container);
     // 오른쪽 여백: 마지막 눈금 글자('12/24~')가 선 끝 아래 가운데에 놓여도 잘리지 않게
@@ -210,12 +221,31 @@
     const iw = W - m.left - m.right, ih = H - m.top - m.bottom;
     const svg = el("svg", { viewBox: `0 0 ${W} ${H}`, role: "img" });
     if (opts.ariaLabel) svg.setAttribute("aria-label", opts.ariaLabel);
-    const all = series.flatMap(s => s.values).filter(v => v !== null && v !== undefined);
+    const all = series.flatMap(s => s.values).concat(band ? band.lo.concat(band.hi) : [])
+      .filter(v => v !== null && v !== undefined);
     const scale = niceScale(Math.min(0, ...all), Math.max(0, ...all), 4);
     const y = v => m.top + ih - (v - scale.lo) / (scale.hi - scale.lo) * ih;
-    axes(svg, m, iw, ih, scale, y);
+    axes(svg, m, iw, ih, scale, y, opts.tickFmt);
     const n = labels.length;
     const x = i => m.left + (n === 1 ? iw / 2 : i * iw / (n - 1));
+
+    if (band) {  // 예측 범위: 같은 색의 옅은 띠 (선보다 먼저 그려 선이 위에 보이게)
+      const idx = band.lo.map((v, i) => (v === null || v === undefined || band.hi[i] === null || band.hi[i] === undefined ? -1 : i)).filter(i => i >= 0);
+      if (idx.length >= 2) {
+        const top = idx.map(i => `${x(i).toFixed(1)},${y(band.hi[i]).toFixed(1)}`);
+        const bottom = idx.slice().reverse().map(i => `${x(i).toFixed(1)},${y(band.lo[i]).toFixed(1)}`);
+        svg.appendChild(el("polygon", { points: top.concat(bottom).join(" "), fill: band.color, "fill-opacity": 0.16, stroke: "none" }));
+      }
+    }
+    if (opts.divider && opts.divider.index > 0 && opts.divider.index < n) {
+      const dx = x(opts.divider.index);
+      svg.appendChild(el("line", { x1: dx, x2: dx, y1: m.top, y2: m.top + ih, stroke: "var(--ink-3)", "stroke-width": 1, "stroke-dasharray": "3 4" }));
+      if (opts.divider.label) {
+        const t = el("text", { x: dx + 5, y: m.top + 10, "font-size": 11, fill: "var(--ink-3)" });
+        t.textContent = opts.divider.label;
+        svg.appendChild(t);
+      }
+    }
 
     for (const s of series) {
       let d = "", last = -1;
@@ -258,8 +288,10 @@
       cross.setAttribute("x1", x(i));
       cross.setAttribute("x2", x(i));
       cross.setAttribute("opacity", 0.5);
+      const rows = series.filter(s => s.values[i] !== null && s.values[i] !== undefined)
+        .map(s => ({ name: s.name, color: s.color, value: s.values[i], shape: "line", fmt: opts.valueFmt }));
       showTip(evt, opts.titleFn ? opts.titleFn(labels[i], i) : labels[i],
-        series.map(s => ({ name: s.name, color: s.color, value: s.values[i], shape: "line" })));
+        rows.concat(opts.tipExtra ? opts.tipExtra(i) || [] : []));
     });
     hit.addEventListener("mouseleave", () => { cross.setAttribute("opacity", 0); hideTip(); });
     svg.appendChild(hit);
@@ -295,5 +327,25 @@
     container.appendChild(list);
   }
 
-  window.WCharts = { groupedBars, lines, hBars, fmtWon, fmtTick };
+  /**
+   * 작은 추세선(표·목록 안). values: 숫자 배열(오래된 순), 반환: SVG 문자열 — 숫자만 들어가 이스케이프가 필요 없다.
+   * 마지막 점에 2px 바탕색 테두리를 두른 점, 0선은 옅게.
+   */
+  function spark(values, color, opts) {
+    opts = opts || {};
+    const W = opts.width || 76, H = opts.height || 24, pad = 3;
+    const vals = values.map(v => Number(v) || 0);
+    if (vals.length < 2) return "";
+    const lo = Math.min(0, ...vals), hi = Math.max(...vals, lo + 1);
+    const x = i => pad + i * (W - pad * 2) / (vals.length - 1);
+    const y = v => H - pad - (v - lo) / (hi - lo) * (H - pad * 2);
+    const pts = vals.map((v, i) => `${x(i).toFixed(1)},${y(v).toFixed(1)}`).join(" ");
+    const last = vals.length - 1;
+    return `<svg class="spark" viewBox="0 0 ${W} ${H}" width="${W}" height="${H}" aria-hidden="true">` +
+      `<line x1="${pad}" x2="${W - pad}" y1="${y(0).toFixed(1)}" y2="${y(0).toFixed(1)}" stroke="var(--grid-line)" stroke-width="1"/>` +
+      `<polyline points="${pts}" fill="none" stroke="${color}" stroke-width="1.6" stroke-linejoin="round" stroke-linecap="round"/>` +
+      `<circle cx="${x(last).toFixed(1)}" cy="${y(vals[last]).toFixed(1)}" r="2.6" fill="${color}" stroke="var(--surface)" stroke-width="1.4"/></svg>`;
+  }
+
+  window.WCharts = { groupedBars, lines, hBars, spark, fmtWon, fmtTick, hideTip };
 })();

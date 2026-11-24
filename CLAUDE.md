@@ -8,8 +8,9 @@ Claude Code 세션이 시작될 때 자동으로 읽는 인수인계 문서입�
 
 웰카오디오의 엑셀 경영관리(`2023 모두플래닛_수입지출관리.xlsm`)를 대체하는 매출/지출 관리 웹앱.
 Flask + SQLite + 바닐라 JS이며, 프런트엔드 외부 라이브러리를 쓰지 않습니다(오프라인 동작).
-PC·휴대폰 로그인(권한별), 엑셀 입력 양식을 올리면 자동 반영·엑셀 내보내기, 경영현황(일·주·월·분기·연,
-전기·전년 동기·목표 대비), 브랜드·차종·서비스 구분별 분석, 월별 목표, 미수금·미지급금, 자동 백업이 들어 있습니다.
+PC·휴대폰 로그인(권한별, 시험용 서버는 로그인 화면에 시험 계정), 엑셀 입력 양식을 올리면 자동 반영·엑셀 내보내기,
+경영현황(일·주·월·분기·연, 전기·전년 동기·목표 대비), 추세·예측(이번 달·다음 달·올해 마감 예상), 브랜드·차종·수리 유형 분석,
+월별 목표, 미수금·미지급금, 자동 백업이 들어 있습니다. 휴대폰 폭에서는 아래쪽 메뉴·내역 카드로 바뀝니다.
 
 ## 브랜치 규칙 (중요)
 
@@ -28,6 +29,7 @@ PC·휴대폰 로그인(권한별), 엑셀 입력 양식을 올리면 자동 반
 python3 -m venv .venv && .venv/bin/pip install -r requirements.txt
 WELLCAR_DB=/tmp/dev.db WELLCAR_ADMIN_PASSWORD=dev-pass-1234 .venv/bin/python seed_demo.py  # 작년 1월~오늘 데모 + 올해 목표 + admin
 WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:8000 (admin / dev-pass-1234)
+# 로그인 화면의 시험 계정까지 보려면 WELLCAR_TEST_ACCOUNTS=1 을 붙인다 (test-admin·test-staff·test-viewer / test1234)
 ```
 
 - 시스템 `pip install`은 Debian이 설치한 `blinker`를 지우지 못해 실패합니다. 반드시 `.venv`를
@@ -39,13 +41,15 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
   개발 중에는 `WELLCAR_ADMIN_PASSWORD`로 admin 계정을 자동 생성하는 편이 쉽습니다.
 - `pkill -f app.py`는 쓰지 마세요. 명령줄에 같은 글자가 있는 셸 자신까지 죽습니다. PID 파일로 끄세요.
 - 변경 후 확인 (모두 통과해야 커밋):
-  - 백엔드: `.venv/bin/python -m unittest discover -s tests` (임시 DB, 37개)
-  - 기간 계산 엔진: `node tests/metrics_test.js` (metrics.js를 Node에서 직접 불러 시험)
-  - 화면: 데모 DB 서버를 띄우고 `LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js`
-    — 로그인, 10개 탭, 목록 페이지·검색, 미수금 완료, 내보내기, 백업·복원, **엑셀 왕복**(내보낸 파일 재업로드 →
-    반영할 것 없음, 관리번호 줄 금액 고쳐 올리기 → 자동 반영), **입력 양식** 받아 적어 올리기(부가세 자동·차종·미지급금·새 코드),
-    경영현황 5개 단위, 분석·엑셀 받기, 목표 채우기·저장, 일괄 완료, 직원·조회 권한, 모바일 폭 가로 넘침까지 확인하고
-    JS 콘솔 오류가 0건이어야 합니다. `SHOT_DIR`을 주면 캡처를 남깁니다.
+  - 백엔드: `.venv/bin/python -m unittest discover -s tests` (임시 DB, 40개)
+  - 기간 계산·예측 엔진: `node tests/metrics_test.js` (metrics.js를 Node에서 직접 불러 시험, 합성 추세·계절 자료로 예측 정확도까지)
+  - 화면: 데모 DB 서버를 **`WELLCAR_TEST_ACCOUNTS=1`로** 띄우고 `LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js`
+    — 로그인, 시험 계정 바로 들어가기(시험 모드일 때만), 12개 탭, 목록 페이지·검색, 미수금 완료, 내보내기, 백업·복원,
+    **엑셀 왕복**(내보낸 파일 재업로드 → 반영할 것 없음, 관리번호 줄 금액 고쳐 올리기 → 자동 반영), **입력 양식** 받아 적어
+    올리기(부가세 자동·차종·미지급금·새 코드), 경영현황 5개 단위, **추세·예측**(지표 4개·범위 띠·계절성·지출·영업이익·브랜드 범위·12개월),
+    **브랜드·차종·수리**(목록·교차표·눌러서 좁히기·건수·수리만·엑셀), 분석·엑셀 받기, 목표 채우기·저장, 일괄 완료, 직원·조회 권한,
+    **휴대폰 폭**(아래쪽 메뉴·전체 메뉴로 10개 화면, 가로 넘침, 내역 카드)까지 확인하고 JS 콘솔 오류가 0건이어야 합니다.
+    `SHOT_DIR`을 주면 캡처를 남깁니다.
     엑셀 편집은 `tests/xlsx_edit_helper.py`(openpyxl)를 `PYTHON`(기본 `.venv/bin/python`)으로 실행해 흉내 냅니다.
   - 가져오기를 고쳤다면: `tests/make_sample_workbook.py`로 시험 통합문서를 만들고 **빈 DB** 서버에서
     `tests/ui_import_check.js`(FILE, TRUTH 환경변수)로 정답과 대조합니다(`--mode both|monthly` 둘 다).
@@ -62,7 +66,7 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 - 파일별 역할과 API 목록은 `README.md`의 '구조'·'API 요약'을 보세요. 배포는 `DEPLOY.md`.
 - 백엔드: `app.py`(라우트·스키마·인증·집계·가져오기 계획), `backup.py`(백업·복원 순수 함수),
   `exporter.py`(xlsx 내보내기·입력 양식), `manage.py`(CLI). 운영 서버는 waitress(`python app.py`), 없으면 Flask 개발 서버.
-- 테이블: `incomes`, `expenses`, `codes`, `targets`(`month` 'YYYY-MM' × `metric` sales/profit/expense), `users`, `settings`.
+- 테이블: `incomes`, `expenses`, `codes`, `targets`(`month` 'YYYY-MM' × `metric` sales/profit/expense), `users`(`is_test` = 시험 계정), `settings`.
   스키마는 `CREATE TABLE IF NOT EXISTS`로만 만들고, 기존 테이블에 열을 더할 때는 `COLUMN_MIGRATIONS`에 추가합니다
   (`init_db()`가 없는 열만 `ALTER TABLE`로 붙임, 기존 데이터 보존). 새 DB도 같은 경로로 열이 붙어 열 구성이 항상 같습니다.
   값을 옮기는 일회성 이관은 `_data_migrations()`(멱등, 복원 뒤에도 실행), 새 코드 그룹 기본값은
@@ -77,11 +81,17 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
     엑셀 올리기는 직원 이상(`@role_required("staff")`), 그중 '맞추기'(sync)와 목표 저장은 관리자만입니다.
   - 세션은 Flask 서명 쿠키(`uid`, `sv`). 비밀번호 변경·사용 중지 때 `session_version`을 올려 다른 기기를 끊습니다.
   - 로그인·설정 코드 실패는 메모리에서 10분 창으로 셉니다(프로세스 1개 기준).
+  - **시험 계정**(`WELLCAR_TEST_ACCOUNTS=1`, 비밀번호 `WELLCAR_TEST_PASSWORD` 또는 `test1234`): `init_db()`의
+    `_sync_test_accounts()`가 test-admin·test-staff·test-viewer를 만들거나 권한·비밀번호를 안내값으로 되돌리고, 꺼져 있으면
+    `is_test=1` 계정을 사용 중지합니다. `/api/auth/state`가 `test_mode`·`test_accounts`(아이디·비밀번호·권한)를 주면 로그인 화면이
+    '시험 계정으로 바로 들어가기'를 그립니다(`renderTestAccounts`). 시험 계정은 비밀번호 변경 불가(본인·관리자 모두),
+    실제 계정 수정·삭제 불가. '처음 사용 설정'은 시험 계정을 뺀 실제 계정이 없고(`_real_user_count`) 시험 모드가 꺼져 있을 때만.
 - 응답 보안 헤더(`security_headers`): HTML에 CSP `script-src 'self'`가 붙습니다. **인라인 `<script>`나
   `onclick=` 속성은 동작하지 않으니** JS 파일에서 이벤트를 연결하세요. API 응답은 `no-store`.
 - 프런트엔드는 `static/index.html` 단일 페이지와 IIFE 스크립트입니다. 불러오는 순서:
   `xlsx_import.js` → `xlsx_writer.js` → `metrics.js`(`window.WellcarMetrics`, Node에서는 `module.exports`) → `charts.js`
-  (`WCharts`) → `reports.js`(`window.WellcarReports(ctx)`: 경영현황·분석·목표 화면) → `app.js`(나머지 화면, `ctx` 전달).
+  (`WCharts`) → `reports.js`(`window.WellcarReports(ctx)`: 경영현황·분석·목표 화면) → `insights.js`(`window.WellcarInsights(ctx)`:
+  추세·예측·브랜드·차종·수리 화면, 조건 붙은 집계는 자체 `aggf()`) → `app.js`(나머지 화면, `ctx` 전달).
   CDN이나 외부 라이브러리를 추가하지 않습니다. 엑셀 파싱은 `xlsx_import.js`(`DecompressionStream`), 브라우저에서 만드는
   엑셀(분석 집계표·데모 내보내기)은 `xlsx_writer.js`입니다.
 - **데이터 값을 `innerHTML`에 넣을 때는 반드시 `esc()`**를 거칩니다(엑셀에서 온 값·거래처명 등).
@@ -100,11 +110,16 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
   영업이익 `--series-profit`(#1baf7a / #199e70), 목표 표시는 글자색(`--ink`). 차트 크기는 `charts.js`의 `frame()`이
   상자 폭(320~960px)에 맞추고, 창 폭이 80px 넘게 바뀌면 다시 그립니다. x축 글자는 겹치지 않게 간격(막대 42px·선 46px)
   이상일 때만 표시합니다(선 차트는 마지막 날짜를 늘 표시).
+- **휴대폰 폭(≤760px, `isNarrow()`·`narrowMQ`와 CSS 미디어쿼리 기준이 같아야 함)**: 위쪽 탭 대신 아래쪽 고정 메뉴(`#bottomNav`:
+  홈·매출·지출·현황·더보기)와 전체 메뉴 시트(`#moreSheet`, 화면 모드·비밀번호·로그아웃 포함). 새 화면을 만들면 `views`·위쪽 탭·
+  전체 메뉴(`.sheet-grid`) 세 곳에 모두 넣으세요. 내역 목록은 `entryTable()`이 표 대신 `entryCards()`를 그리고(경계를 넘으면
+  다시 그림), 매출·지출 등록 폼은 접힌 채 '+ 새 … 등록' 버튼으로 펼칩니다(`setFormOpen`). 입력칸은 아이폰 확대를 막으려 16px,
+  경영지표 표의 금액 칸(`.abs`)은 숨기고 증감·달성률만 둡니다. 차트 툴팁은 스크롤하거나 차트 밖을 누르면 닫힙니다.
 - 휴대폰 '홈 화면에 추가': `static/manifest.webmanifest`와 `static/icons/`(SVG 원본, PNG 180·192·512).
   서비스 워커는 없습니다(오프라인 동작 안 함). `.webmanifest` MIME은 `app.py`에서 등록합니다.
 - 용어: 화면과 문서는 **'매출/지출'**로 통일합니다('수입'이라 쓰지 않음). DB 테이블과 API
   경로는 `incomes`/`expenses` 이름을 그대로 유지합니다. '브랜드' = 차량제조사(`manufacturer`),
-  '서비스 구분' = 매출구분(`category`), '실매출' = 매출액 − 미지급금.
+  '서비스 구분'·'수리 유형' = 매출구분(`category`), '실매출' = 매출액 − 미지급금.
 - UI 문구와 코드 주석은 한국어로 씁니다.
 
 ## 업무 규칙 (기존 엑셀과 사용자 확인 사항)
@@ -132,6 +147,19 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 - **목표**: 월 단위로만 저장합니다(매출 = 실매출 목표, 영업이익 목표, 지출 예산). 주·일·부분 기간 목표는 달마다
   날짜 수로 나눠 더합니다(`targetFor()`). 진행 중 기간의 달성률 막대에는 오늘까지 진도를 함께 표시합니다.
   PUT은 한 해를 통째로 바꾸고 빈 값은 지웁니다. 영업이익 목표만 음수를 허용합니다.
+- **추세·예측**(`metrics.js` `forecastSeries()`·`monthLanding()`·`diffForecast()`, 화면 `insights.js`):
+  - 끝난 달의 월별 값(최근 36개월, 기록 시작 전 0인 달은 뺌)으로 예측. 12개월 이상이면 추세(직선, 최근 36개월) × 계절 지수
+    (같은 달끼리 값÷추세 평균을 관측 수 n/(n+0.5)만큼만 반영, 평균 1로 맞춤, 5번 반복), 3~11개월이면 추세만, 1~2개월이면 평균.
+    추세는 월 0.95씩 감쇠. 범위는 80% 예측 구간(회귀 잔차, 최소 수준의 ±4%·지난 6개월 시험 오차 반영). 매출·지출은 0 아래로 내려가지 않음.
+  - 지난 6개월(자료가 9개월 이상일 때 3~6개월)을 빼고 맞춘 모형으로 그 달들을 예측해 평균 절대 백분율 오차를 '시험 오차'로 보여 줌.
+  - **이번 달 마감 예상 = 오늘까지 실적 + (1 − p) × 그달 예측값**. p는 지난 6개월이 같은 시점(달 길이 비율)까지 쌓인 비율의 평균
+    (25일 급여처럼 몰리는 지출도 반영, 2개월 미만이면 날짜 비율). 예측값이 없으면 지금 속도(실적 ÷ p). '지금 속도면'도 따로 보여 줌.
+  - 올해 마감 예상 = 올해 끝난 달 실적 + 이번 달 마감 예상 + 남은 달 예측. 영업이익 = 매출 예측 − 지출 예측(범위는 제곱합).
+  - 범위를 브랜드·수리 유형 하나로 좁히면(`f.manufacturer`/`f.category`) 매출만 예측합니다. 예측값은 화면에서 만 원 단위로 반올림.
+- **브랜드·차종·수리 유형 분석**(`insights.js`): `/api/agg`를 `manufacturer,car_model,category`(이번·비교 기간)와
+  `month,manufacturer,category`·`month,manufacturer,car_model`(12개월 추세선) 네 번 불러 화면에서 나눔. 진행 중인 기간의 비교는
+  `comparePlan`처럼 같은 날짜 수까지. 목록 항목을 누르면 `MX.f` 조건으로 좁힘(각 목록은 자기 분류 조건은 빼고 적용).
+  범위 '수리·서비스'·'상품판매'는 `f.income_type`(서비스제공·상품판매).
 - **엑셀 올리기(가져오기)** — 판정은 서버 `_plan_import()`, 화면은 먼저 `dry_run`으로 계획을 받습니다.
   - '영업일자' 열과 함께 '매출액'+'매출유형' 또는 '지출금액'+'지출유형' 열이 있는 시트를 인식합니다
     (머리글은 15행 안에서 찾음, 공백 무시). 원본 시트·입력 양식(`/api/template.xlsx`)·이 시스템이 내보낸 파일 모두 읽습니다.
@@ -187,9 +215,9 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 - 「웰카오디오 매출/지출관리 시스템 (데모)」. 아래 두 주소는 같은 아티팩트입니다.
   - https://claude.ai/artifact/8nBZjenXgYw7ndbvs5Gw7W (게시 도구가 돌려준 주소, 갱신할 때 이것을 `url`로)
   - https://claude.ai/code/artifact/3efef368-9509-49fa-a48f-7436a9bedb29 (사용자가 처음 받은 주소)
-- **2026-10-04 버전**(Version 6)입니다. 비공개(사용자 본인만 열람)이며, 공유는 사용자가 페이지의 공유 메뉴에서 합니다.
+- **2026-11-24 버전**(Version 7)입니다. 비공개(사용자 본인만 열람)이며, 공유는 사용자가 페이지의 공유 메뉴에서 합니다.
 - 실제 화면 파일(`static/`)을 그대로 묶고, 서버 대신 `demo/mock_api.js`가 브라우저 안에서 `/api/*`를 처리합니다.
-  로그인·권한·미수금·내보내기·입력 양식·엑셀 올리기(관리번호 수정·맞추기 포함)·집계·목표·백업까지 실제와 같이 동작합니다.
+  로그인·권한·미수금·내보내기·입력 양식·엑셀 올리기(관리번호 수정·맞추기 포함)·집계·목표·예측·브랜드 분석·백업까지 실제와 같이 동작합니다.
   소스는 `demo/`와 `static/`에 있습니다.
   - `mock_api.js`: app.py의 API를 브라우저 안으로 옮긴 것(`window.fetch` 가로채기). 데이터는 localStorage
     `wellcar_demo_v3`(백업 `wellcar_demo_v3_backups`, 로그인 `wellcar_demo_v3_session`)에 저장되므로
@@ -199,17 +227,20 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
   - xlsx 작성은 `static/js/xlsx_writer.js`(압축 없는 ZIP, 드롭다운·틀 고정 지원)를 함께 씁니다.
   - `demo_shell.js`: 파일 저장 창, '처음 상태로 되돌리기'(두 번 눌러야 실행), 데모 계정 버튼.
   - `build_demo.py`: `demo/dist/wellcar_demo.html`(게시용)과 `preview.html`(로컬 점검용) 생성. `dist/`는 git 제외.
-    인라인 순서는 `SCRIPTS` 목록(xlsx_writer → mock_api → demo_shell → 화면 스크립트)입니다. 새 JS 파일을 만들면 여기에도 추가하세요.
+    인라인 순서는 `SCRIPTS` 목록(xlsx_writer → mock_api → demo_shell → 화면 스크립트)입니다. **새 JS 파일을 만들면 여기에도 추가하세요**
+    (2026-11-24에 insights.js를 빠뜨려 데모에서 새 화면이 비는 일이 있었음 — 빌드 뒤 `grep -c WellcarInsights demo/dist/wellcar_demo.html`이 2 이상인지 확인).
 - 데모 계정: admin(관리자·사장), staff(직원·김직원), viewer(조회 전용·세무사). 비밀번호는 모두 `demo1234`입니다.
-  처음 데이터는 작년 1월 1일부터 오늘까지 매출 929건·지출 746건과 올해 월별 목표입니다(`seed_demo.py`를 JS로 옮긴 것이지만
-  난수 생성기가 달라 서버 데모 1004건·755건과 건수가 다름).
+  세 계정은 서버의 시험 계정과 같은 역할이라(`isTest()`, `is_test: 1`) 로그인 화면의 '시험 계정으로 바로 들어가기'에 나오고
+  비밀번호를 바꿀 수 없습니다(그래서 데모의 admin으로는 '비밀번호 변경' 메뉴가 없음).
+  처음 데이터는 작년 1월 1일부터 오늘까지의 매출·지출(2026-11-24 기준 매출 1,006건)과 올해 월별 목표입니다(`seed_demo.py`를
+  JS로 옮긴 것이지만 난수 생성기가 달라 서버 데모 건수와 다름).
 - 아티팩트 화면에서는 `confirm()`이 곧바로 '취소'가 되고, 페이지가 직접 내려받기를 시작할 수 없습니다.
   그래서 앱은 화면 안 확인 창(`askConfirm`)을 씁니다. 데모는 `downloads` 기능(`claude.use("downloads").save`)으로
   저장 확인 창을 띄웁니다. 앱 쪽 연결점은 `window.WellcarHost.saveFile`입니다.
 - **API나 화면을 바꾸면 데모도 맞춰야 합니다.** `mock_api.js`는 app.py를 손으로 옮긴 것이라 자동으로 따라가지 않습니다.
   갱신 순서는 다음과 같습니다.
   1. `mock_api.js`를 고치고 `.venv/bin/python demo/build_demo.py`를 실행합니다.
-  2. `python3 -m http.server 8010 -d demo/dist`로 띄운 뒤 `tests/ui_demo_check.js`를 돌립니다(새 탭 모바일 넘침·양식 저장 포함).
+  2. `python3 -m http.server 8010 -d demo/dist`로 띄운 뒤 `tests/ui_demo_check.js`를 돌립니다(시험 계정 버튼, 새 탭 모바일 넘침·양식 저장 포함).
      이어서 `BASE_URL=http://localhost:8010/preview.html UI_PASS=demo1234`로 `tests/ui_smoke.js`도 돌립니다.
   3. 다른 세션이라면 먼저 위 주소를 Artifact `read`로 읽습니다(읽지 않은 아티팩트에 게시하면 거절됨).
      읽은 본문이 직전 커밋으로 빌드한 것과 같은지 확인하면 다른 곳에서 바뀐 내용이 없는지 알 수 있습니다.
@@ -229,10 +260,14 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 | 2026-10-03 | 9fdec70 | "데모도 새버전으로 만들어줘" → 실제 화면 + 브라우저 안 목업 API로 데모를 다시 만들어 같은 주소에 게시(Version 4). 빌드 소스(`demo/`)·데모 점검 스크립트를 저장소에 추가. 아티팩트 화면에서 동작하지 않던 `confirm()`을 화면 안 확인 창으로 교체 |
 | 2026-10-04 | 82f4a65 | 운영 방식·경영지표 요청(PC·휴대폰 로그인 운영, 엑셀 입력 양식 업로드 자동 반영·다운로드, 미지급금 = 거래처 지급액으로 매출차감, 일·주·월·분기·연 및 전기·전년 동기·목표 대비 경영지표, 브랜드·차종·서비스 구분별 매출 집계) → 차종·미지급금(매출차감)·월별 목표 테이블, `/api/agg` 집계, 경영현황·매출·비용 분석·목표·실적 탭, 엑셀 입력 양식·관리번호 수정·맞추기·자동 반영·되돌리기, 내보내기 분류별 집계 시트, 휴대폰 홈 화면 추가, DEPLOY.md에 운영 방식 추천. 데모 Version 6 게시 |
 
+| 2026-11-24 | (아래 참고) | "테스트 계정을 로그인 화면에, 모바일 웹 보기 편하게, 추세 분석으로 매출·지출 예측(forecasting), 차 브랜드·차종·수리 타입별 분석" → 시험 계정(`WELLCAR_TEST_ACCOUNTS`, 로그인 화면 바로 들어가기, 데모 계정도 같은 방식), 휴대폰 아래쪽 메뉴·전체 메뉴·내역 카드·폼 접기·16px 입력, 추세·예측 탭(이번 달·다음 달·올해 마감 예상, 80% 범위, 계절성, 시험 오차, 브랜드·수리 유형 범위), 브랜드·차종·수리 유형 탭(순위·증감·추세선·교차표·눌러서 좁히기·엑셀). 데모 Version 7 게시 |
+
 사용자가 거절했거나 "나중에 하자"고 미뤄 둔 항목은 없습니다.
 
 2026-10-04 요청을 해석한 내용(사용자에게 알렸고, 다르면 고쳐야 함): 브랜드 = 차량제조사, 차종은 새 항목(브랜드 아래 코드),
 서비스 구분 = 매출구분, 목표는 월 단위(주·일은 날짜 수로 안분), 실제 운영 주소는 사용자가 정해 가입해야 함(B. PythonAnywhere 권장).
+2026-11-24 요청 해석: '수리 타입' = 매출구분(서비스 구분과 같은 칸, 수리·서비스만 보기는 매출유형 '서비스제공'), 테스트 계정은 실서버에서는
+시험 모드로만 켜고(실제 장부 서버에는 켜지 않음) 데모는 기존 데모 계정을 시험 계정으로 보여 줌, 예측은 월 단위(일·주 예측은 없음).
 
 ## 사용자와 소통 방식
 
@@ -258,3 +293,6 @@ WELLCAR_DB=/tmp/dev.db PORT=8000 .venv/bin/python app.py   # http://localhost:80
 6. 분할 입금 이력, 수정·삭제 이력(감사 로그), 비밀번호 찾기(메일)는 없습니다.
 7. 목표는 회사 전체 월 목표만 있습니다(브랜드·서비스 구분별 목표, 주 단위 직접 입력 없음). 지표는 부가세 포함 금액 기준입니다.
 8. 휴대폰 앱은 홈 화면 바로가기 수준입니다(서비스 워커·오프라인·푸시 알림 없음).
+9. 예측은 지난 흐름이 이어진다는 가정의 통계 예측입니다. 공휴일·명절 효과, 가격 인상, 큰 거래처 변화는 모릅니다. 실적이
+   2년보다 짧으면 계절 지수에 잡음이 섞이고(화면에 안내), 데모 데이터는 날마다 무작위라 시험 오차가 큽니다(약 ±25%).
+10. 시험 계정을 켠 서버는 로그인 화면에 비밀번호가 보이므로 실제 장부와 다른 DB로만 써야 합니다(DEPLOY.md '시험용 서버').

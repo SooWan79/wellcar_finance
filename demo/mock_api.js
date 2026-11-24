@@ -10,6 +10,8 @@
   const SESSION_KEY = "wellcar_demo_v3_session";
   const OLD_KEYS = ["wellcar_demo_v1", "wellcar_demo_v2", "wellcar_demo_v2_backups", "wellcar_demo_v2_session"];
   const DEMO_PASSWORD = "demo1234";
+  // 로그인 화면의 '시험 계정으로 바로 들어가기'에 보이는 데모 계정 (서버의 WELLCAR_TEST_ACCOUNTS와 같은 역할)
+  const DEMO_LOGINS = ["admin", "staff", "viewer"];
 
   // ---------------------------------------------------------------- 저장소 (실패해도 동작)
   function storage(kind) {
@@ -225,7 +227,7 @@
     const hash = await hashPassword(DEMO_PASSWORD);
     for (const [username, display_name, role] of [["admin", "사장", "admin"], ["staff", "김직원", "staff"], ["viewer", "세무사", "viewer"]]) {
       db.users.push({ id: ++db.seq.users, username, display_name, password_hash: hash, role, active: 1,
-        session_version: 1, last_login_at: "", created_at: nowStr() });
+        session_version: 1, last_login_at: "", created_at: nowStr(), is_test: 1 });
     }
     seedEntries(db);
     return db;
@@ -272,9 +274,15 @@
   }
   const validateUsername = u => USERNAME_RE.test(u) ? null : "아이디는 2~30자의 한글·영문·숫자와 . _ - 만 쓸 수 있습니다.";
   const userLabel = u => u ? (u.display_name || u.username) : "";
+  // 시험(데모) 계정: 처음 만든 세 계정. 예전 저장본에는 표시가 없어 번호·아이디로도 알아본다
+  const isTest = u => !!u && (!!u.is_test || (u.id <= 3 && DEMO_LOGINS.includes(u.username)));
   const userPublic = u => ({ id: u.id, username: u.username, display_name: u.display_name || "", name: userLabel(u),
     role: u.role, role_label: ROLE_LABELS[u.role] || "", active: !!u.active,
-    last_login_at: u.last_login_at || "", created_at: u.created_at || "" });
+    last_login_at: u.last_login_at || "", created_at: u.created_at || "", is_test: isTest(u) });
+  const ROLE_ORDER = { admin: 0, staff: 1, viewer: 2 };
+  const testAccounts = () => DB.users.filter(u => isTest(u) && u.active)
+    .sort((a, b) => ROLE_ORDER[a.role] - ROLE_ORDER[b.role] || a.id - b.id)
+    .map(u => ({ username: u.username, password: DEMO_PASSWORD, name: userLabel(u), role: u.role, role_label: ROLE_LABELS[u.role] || "" }));
 
   function readSession() { return readJSON(sessionStore, SESSION_KEY) || readJSON(local, SESSION_KEY); }
   function startSession(u, remember) {
@@ -1022,7 +1030,10 @@
     const needAdmin = () => (ROLES[me.role] < ROLES.admin ? err(403, "관리자 권한이 필요한 기능입니다.") : null);
 
     // 인증
-    if (path === "/api/auth/state") return json(200, { setup_required: !DB.users.length, user: me ? userPublic(me) : null });
+    if (path === "/api/auth/state") {
+      return json(200, { setup_required: !DB.users.length, test_mode: true, test_accounts: testAccounts(),
+        user: me ? userPublic(me) : null });
+    }
     if (path === "/api/auth/login" && method === "POST") {
       const username = String(body.username || "").trim(), password = String(body.password || "");
       const u = DB.users.find(x => x.username.toLowerCase() === username.toLowerCase());
@@ -1036,6 +1047,7 @@
     if (path === "/api/auth/setup") return err(409, "이미 관리자 계정이 있습니다. 로그인하세요.");
     if (path === "/api/auth/logout" && method === "POST") { clearSession(); return json(200, { ok: true }); }
     if (path === "/api/auth/password" && method === "POST") {
+      if (isTest(me)) return err(403, "시험 계정은 비밀번호를 바꿀 수 없습니다.");
       if (me.password_hash !== await hashPassword(String(body.current_password || ""))) return err(403, "현재 비밀번호가 맞지 않습니다.");
       const pw = String(body.new_password || "");
       const e = validatePassword(pw, me.username);
@@ -1072,6 +1084,7 @@
       const u = DB.users.find(x => x.id === +m[1]);
       if (!u) return err(404, "해당 사용자가 없습니다.");
       const otherAdmins = DB.users.filter(x => x.role === "admin" && x.active && x.id !== u.id).length;
+      if (isTest(me) && !isTest(u)) return err(403, `시험 계정으로는 실제 계정을 ${method === "DELETE" ? "지울" : "바꿀"} 수 없습니다.`);
       if (method === "DELETE") {
         if (u.id === me.id) return err(400, "본인 계정은 삭제할 수 없습니다.");
         if (u.role === "admin" && u.active && !otherAdmins) return err(400, "관리자가 최소 한 명은 있어야 합니다.");
@@ -1086,6 +1099,7 @@
       if (u.id === me.id && (role !== u.role || !active)) return err(400, "본인 계정의 권한과 사용 여부는 바꿀 수 없습니다.");
       if (u.role === "admin" && u.active && (role !== "admin" || !active) && !otherAdmins)
         return err(400, "관리자가 최소 한 명은 있어야 합니다.");
+      if (body.password && isTest(u)) return err(403, "시험 계정의 비밀번호는 바꿀 수 없습니다(로그인 화면에 안내된 값 유지).");
       if (body.password) {
         const e = validatePassword(String(body.password), u.username);
         if (e) return err(400, e);

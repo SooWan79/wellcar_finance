@@ -170,4 +170,100 @@ test("분석 비교 범위", () => {
   assert.strictEqual(M.compareRange("2026-01-01", "2026-01-31", "none", null), null);
 });
 
+test("월 키", () => {
+  assert.strictEqual(M.addMonthKey("2026-11", 2), "2027-01");
+  assert.strictEqual(M.addMonthKey("2026-01", -1), "2025-12");
+  assert.deepStrictEqual(M.monthKeys("2025-11", "2026-02"), ["2025-11", "2025-12", "2026-01", "2026-02"]);
+});
+
+// 시험용 월별 값: 기준 1000만 원, 월 1% 성장(직선), 계절 지수, 잡음 ±noise(결정적)
+const SEAS = [0.85, 0.8, 0.95, 1.0, 1.05, 1.0, 1.1, 1.05, 0.95, 1.0, 1.05, 1.2];
+function synth(months, firstMonth, noise) {
+  const out = [];
+  for (let i = 0; i < months; i++) {
+    const m = (firstMonth - 1 + i) % 12;
+    const wiggle = noise ? Math.sin(i * 2.3) * noise : 0;
+    out.push(Math.round(1e7 * (1 + 0.01 * i) * SEAS[m] * (1 + wiggle)));
+  }
+  return out;
+}
+
+test("예측: 추세 + 계절성 (24개월)", () => {
+  const hist = synth(24, 1, 0.03);
+  const truth = synth(30, 1, 0).slice(24);  // 다음 6개월(잡음 없는 정답)
+  const f = M.forecastSeries(hist, 1, { horizon: 6 });
+  assert.strictEqual(f.method, "seasonal");
+  assert.strictEqual(f.forecast.length, 6);
+  f.forecast.forEach((p, i) => {
+    const err = Math.abs(p.mean - truth[i]) / truth[i];
+    assert.ok(err < 0.07, `${i + 1}개월 뒤 오차 ${(err * 100).toFixed(1)}%`);
+    assert.ok(p.lo <= p.mean && p.mean <= p.hi && p.lo >= 0);
+  });
+  // 계절 지수: 12월이 가장 크고 2월이 가장 작다
+  const s = f.seasonal;
+  assert.strictEqual(s.indexOf(Math.max(...s)), 11);
+  assert.strictEqual(s.indexOf(Math.min(...s)), 1);
+  assert.ok(f.slopePct > 0.3 && f.slopePct < 1.5, `월 추세 ${f.slopePct}`);
+  assert.ok(f.backtest && f.backtest.mape < 10, "지난 6개월 시험 오차");
+  // 범위는 멀리 갈수록 넓어진다(상대 폭)
+  const rel = f.forecast.map(p => p.hw / p.mean);
+  assert.ok(rel[5] >= rel[0]);
+});
+
+test("예측: 1년 남짓이면 추세 + 줄인 계절성, 짧으면 추세·평균", () => {
+  const f13 = M.forecastSeries(synth(13, 3, 0), 3, { horizon: 3 });
+  assert.strictEqual(f13.method, "seasonal");
+  const f8 = M.forecastSeries(synth(8, 3, 0), 3, { horizon: 3 });
+  assert.strictEqual(f8.method, "trend");
+  assert.strictEqual(f8.seasonal, null);
+  const f2 = M.forecastSeries([100, 200], 5, { horizon: 2 });
+  assert.strictEqual(f2.method, "average");
+  assert.strictEqual(Math.round(f2.forecast[0].mean), 150);
+  const f0 = M.forecastSeries([0, 0, 0], 1, { horizon: 2 });
+  assert.strictEqual(f0.method, "none");
+  assert.strictEqual(f0.forecast.length, 0);
+});
+
+test("예측: 기록 시작 전(앞쪽 0인 달)은 빼고, 음수가 되지 않는다", () => {
+  const vals = [0, 0, 0, ...synth(14, 4, 0)];  // 1~3월은 기록 없음, 4월부터
+  const f = M.forecastSeries(vals, 1, { horizon: 2 });
+  assert.strictEqual(f.n, 14);
+  assert.strictEqual(f.start, 3);
+  assert.strictEqual(f.method, "seasonal");
+  const down = M.forecastSeries([900, 700, 500, 300, 100], 1, { horizon: 6 });
+  down.forecast.forEach(p => assert.ok(p.mean >= 0 && p.lo >= 0));
+  // 영업이익(음수 가능)은 nonNegative: false
+  const loss = M.forecastSeries([-100, -120, -140, -160], 1, { horizon: 1, nonNegative: false });
+  assert.ok(loss.forecast[0].mean < -160);
+});
+
+test("예측: 영업이익 = 매출 − 지출 (범위는 제곱합)", () => {
+  const d = M.diffForecast([{ h: 1, mean: 100, hw: 30 }], [{ h: 1, mean: 60, hw: 40 }]);
+  assert.strictEqual(d[0].mean, 40);
+  assert.strictEqual(d[0].hw, 50);
+  assert.deepStrictEqual([d[0].lo, d[0].hi], [-10, 90]);
+});
+
+test("이번 달 마감 예상", () => {
+  // 지난 달들: 매일 같은 매출 → 30일 중 15일이면 절반
+  const flat = Array(30).fill(10);
+  const r = M.monthLanding({ mtd: 150, today: "2026-11-15", history: [flat, flat, flat], monthMean: 300, monthHw: 60 });
+  assert.ok(Math.abs(r.share - 0.5) < 0.01);
+  assert.strictEqual(Math.round(r.mean), 300);   // 150 + (1 − 0.5) × 300
+  assert.strictEqual(Math.round(r.pace), 300);   // 지금 속도 150 ÷ 0.5
+  assert.strictEqual(Math.round(r.hw), 30);      // 남은 몫만큼의 범위
+  // 월말에 몰리는 지출(25일 급여): 15일까지는 20%만 쓰는 달 → 남은 80%를 더한다
+  const lumpy = Array(30).fill(2);
+  lumpy[24] = 240;  // 합 298 중 15일까지 30 (약 10%)
+  const e = M.monthLanding({ mtd: 30, today: "2026-11-15", history: [lumpy, lumpy], monthMean: 300, monthHw: 0 });
+  assert.ok(e.share < 0.15);
+  assert.ok(e.mean > 280, `지출 마감 예상 ${e.mean}`);
+  // 예측값이 없으면 지금 속도
+  const np = M.monthLanding({ mtd: 100, today: "2026-11-10", history: [], monthMean: null });
+  assert.strictEqual(Math.round(np.mean), 300);  // 30일 중 10일 → 100 ÷ (1/3)
+  // 마지막 날이면 실적 그대로
+  const last = M.monthLanding({ mtd: 321, today: "2026-11-30", history: [flat, flat], monthMean: 999 });
+  assert.strictEqual(last.mean, 321);
+});
+
 console.log(`metrics.js: ${n}개 묶음 모두 통과`);

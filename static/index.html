@@ -24,6 +24,17 @@
       </span>
     </div>
 
+    <!-- 시험 계정: 서버가 시험 모드(WELLCAR_TEST_ACCOUNTS)이거나 데모일 때만 보인다 -->
+    <section id="testAccounts" class="test-accounts" aria-labelledby="testAccountsTitle" hidden>
+      <div class="ta-head">
+        <span class="ta-badge">시험용</span>
+        <h2 id="testAccountsTitle">시험 계정으로 바로 들어가기</h2>
+      </div>
+      <p class="ta-sub">누르면 바로 로그인됩니다. 권한마다 쓸 수 있는 기능이 다릅니다.</p>
+      <div class="ta-list" id="testAccountList"></div>
+      <p class="ta-or" id="testAccountsOr"><span>또는 아이디로 로그인</span></p>
+    </section>
+
     <form id="loginForm" class="auth-form" hidden>
       <h1>로그인</h1>
       <p class="auth-sub" id="loginNotice">계정이 없으면 관리자에게 만들어 달라고 요청하세요.</p>
@@ -78,6 +89,8 @@
     <button data-view="expense" class="tab">지출관리</button>
     <button data-view="balances" class="tab">미수·미지급</button>
     <button data-view="report" class="tab">경영현황</button>
+    <button data-view="forecast" class="tab">추세·예측</button>
+    <button data-view="mix" class="tab">브랜드·차종·수리</button>
     <button data-view="analysis" class="tab">매출·비용 분석</button>
     <button data-view="targets" class="tab">목표·실적</button>
     <button data-view="data" class="tab">데이터 관리</button>
@@ -142,10 +155,11 @@
       </div>
     </div>
     <div class="grid-form">
-      <div class="card need-staff">
+      <div class="card need-staff form-card collapsed" id="incFormCard">
         <div class="card-head">
           <h3 id="incomeFormTitle">매출 등록</h3>
           <span class="form-meta" id="incMeta"></span>
+          <button type="button" class="btn primary small form-toggle" data-form-toggle="incFormCard" aria-expanded="false">+ 새 매출 등록</button>
         </div>
         <form id="incomeForm" class="entry-form">
           <input type="hidden" id="incId">
@@ -237,10 +251,11 @@
       </div>
     </div>
     <div class="grid-form">
-      <div class="card need-staff">
+      <div class="card need-staff form-card collapsed" id="expFormCard">
         <div class="card-head">
           <h3 id="expenseFormTitle">지출 등록</h3>
           <span class="form-meta" id="expMeta"></span>
+          <button type="button" class="btn primary small form-toggle" data-form-toggle="expFormCard" aria-expanded="false">+ 새 지출 등록</button>
         </div>
         <form id="expenseForm" class="entry-form">
           <input type="hidden" id="expId">
@@ -413,6 +428,97 @@
         <div><h4 class="sub-head">계좌별 매출 (입금 계좌)</h4><div id="rpByAccount"></div></div>
         <div><h4 class="sub-head">결제수단별 지출</h4><div id="rpByPayment"></div></div>
       </div>
+    </div>
+  </section>
+
+  <!-- ================= 추세·예측 ================= -->
+  <section id="view-forecast" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>추세·예측</h2>
+        <p class="view-sub">지난 실적의 추세와 계절성으로 이번 달 마감과 앞으로의 매출·지출·영업이익을 예상합니다.</p>
+      </div>
+    </div>
+    <div class="toolbar">
+      <div class="seg" id="fcKind" role="group" aria-label="예측 대상">
+        <button type="button" data-kind="sales" class="on" aria-pressed="true">매출</button>
+        <button type="button" data-kind="expense">지출</button>
+        <button type="button" data-kind="profit">영업이익</button>
+      </div>
+      <label class="tool-field"><span>앞으로</span>
+        <select id="fcHorizon" class="input" aria-label="예측 기간">
+          <option value="3">3개월</option>
+          <option value="6" selected>6개월</option>
+          <option value="12">12개월</option>
+        </select></label>
+      <label class="tool-field"><span>범위</span>
+        <select id="fcScope" class="input" aria-label="예측 범위"><option value="">전체</option></select></label>
+    </div>
+    <div id="fcTiles"></div>
+    <div class="card">
+      <div class="card-head"><h3 id="fcChartTitle">월별 매출 — 실적과 예측</h3><span class="card-meta" id="fcChartMeta">단위: 원</span></div>
+      <div id="fcChart" class="chart-box"></div>
+      <p class="chart-note" id="fcMethod"></p>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>예측표</h3><span class="card-meta">예상은 만 원 단위 · 범위는 80% 예측 구간</span></div>
+      <div class="table-wrap" id="fcTable"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 id="fcSeasonTitle">계절성</h3><span class="card-meta">평소(월평균) 대비</span></div>
+      <div id="fcSeason" class="chart-box"></div>
+      <p class="chart-note" id="fcSeasonNote"></p>
+    </div>
+    <p class="form-hint">예측은 지난 실적의 흐름(추세·계절성)이 그대로 이어진다고 보고 계산한 참고값입니다. 큰 거래처 변화·가격 인상 같은 일은 반영하지 못합니다.
+      이번 달 마감 예상은 <b>오늘까지 실적 + 남은 날의 평소 몫</b>입니다.</p>
+  </section>
+
+  <!-- ================= 브랜드·차종·수리 유형 ================= -->
+  <section id="view-mix" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>브랜드·차종·수리 유형 분석</h2>
+        <p class="view-sub">차 브랜드·차종·수리 유형(매출구분)별 실매출·건수·객단가와 증감을 한눈에 봅니다. 항목을 누르면 그 항목으로 좁혀 봅니다.</p>
+      </div>
+      <button class="btn" id="mxExport">엑셀로 받기</button>
+    </div>
+    <div class="toolbar">
+      <select id="mxPeriod" class="input" aria-label="기간"></select>
+      <div class="seg" id="mxScope" role="group" aria-label="매출 범위">
+        <button type="button" data-scope="" class="on" aria-pressed="true">전체 매출</button>
+        <button type="button" data-scope="서비스제공">수리·서비스</button>
+        <button type="button" data-scope="상품판매">상품판매</button>
+      </div>
+      <div class="seg" id="mxMeasure" role="group" aria-label="값">
+        <button type="button" data-measure="sales" class="on" aria-pressed="true">실매출</button>
+        <button type="button" data-measure="cnt">건수</button>
+        <button type="button" data-measure="avg">객단가</button>
+      </div>
+      <label class="tool-field"><span>비교</span>
+        <select id="mxCompare" class="input" aria-label="비교">
+          <option value="ly">전년 동기</option>
+          <option value="prev">전기</option>
+        </select></label>
+    </div>
+    <div class="filter-chips" id="mxChips" hidden></div>
+    <div id="mxSummary"></div>
+    <div class="grid-3">
+      <div class="card">
+        <div class="card-head"><h3>브랜드별</h3><span class="card-meta" id="mxBrandMeta"></span></div>
+        <div id="mxBrand" class="rank-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>차종별</h3><span class="card-meta" id="mxModelMeta"></span></div>
+        <div id="mxModel" class="rank-list"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>수리 유형별 <small class="muted">(매출구분)</small></h3><span class="card-meta" id="mxCatMeta"></span></div>
+        <div id="mxCategory" class="rank-list"></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3>브랜드 × 수리 유형</h3><span class="card-meta" id="mxMatrixMeta">칸이 진할수록 많음</span></div>
+      <div class="table-wrap" id="mxMatrix"></div>
     </div>
   </section>
 
@@ -631,6 +737,36 @@
   </section>
 
 </main>
+
+<!-- 휴대폰 폭: 아래쪽 고정 메뉴 + 전체 메뉴 -->
+<nav class="bottom-nav" id="bottomNav" aria-label="빠른 메뉴">
+  <button type="button" class="bn-item" data-view="dashboard"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 11l9-7 9 7v9a1 1 0 0 1-1 1h-5v-6h-6v6H4a1 1 0 0 1-1-1z"/></svg><span>홈</span></button>
+  <button type="button" class="bn-item" data-view="income"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 17l6-6 4 4 8-8"/><path d="M14 7h7v7"/></svg><span>매출</span></button>
+  <button type="button" class="bn-item" data-view="expense"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7l6 6 4-4 8 8"/><path d="M14 17h7v-7"/></svg><span>지출</span></button>
+  <button type="button" class="bn-item" data-view="report"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 21h18"/><path d="M6 17v-5"/><path d="M11 17V7"/><path d="M16 17v-8"/><path d="M21 17v-3"/></svg><span>현황</span></button>
+  <button type="button" class="bn-item" id="bnMore" aria-haspopup="dialog" aria-controls="moreSheet"><svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="4" width="6" height="6" rx="1.5"/><rect x="14" y="4" width="6" height="6" rx="1.5"/><rect x="4" y="14" width="6" height="6" rx="1.5"/><rect x="14" y="14" width="6" height="6" rx="1.5"/></svg><span>더보기</span></button>
+</nav>
+<div class="more-sheet" id="moreSheet" role="dialog" aria-modal="true" aria-labelledby="moreSheetTitle" hidden>
+  <div class="sheet-backdrop" data-sheet-close></div>
+  <div class="sheet-panel">
+    <div class="sheet-head"><b id="moreSheetTitle">전체 메뉴</b><button type="button" class="icon-btn" data-sheet-close aria-label="닫기">✕</button></div>
+    <div class="sheet-grid">
+      <button type="button" data-view="balances">미수·미지급</button>
+      <button type="button" data-view="forecast">추세·예측</button>
+      <button type="button" data-view="mix">브랜드·차종·수리</button>
+      <button type="button" data-view="analysis">매출·비용 분석</button>
+      <button type="button" data-view="targets">목표·실적</button>
+      <button type="button" data-view="data">데이터 관리</button>
+      <button type="button" data-view="codes" class="need-admin">코드관리</button>
+      <button type="button" data-view="users" class="need-admin">사용자관리</button>
+    </div>
+    <div class="sheet-actions">
+      <button type="button" id="sheetTheme">화면 모드</button>
+      <button type="button" id="sheetPassword">비밀번호 변경</button>
+      <button type="button" id="sheetLogout">로그아웃</button>
+    </div>
+  </div>
+</div>
 </div>
 
 <!-- ================= 대화상자 ================= -->
@@ -693,6 +829,7 @@
 <script src="js/metrics.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/reports.js"></script>
+<script src="js/insights.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

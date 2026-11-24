@@ -36,13 +36,19 @@ function watch(page) {
 
 async function demoLogin(page, who) {
   await page.waitForSelector("#loginForm:not([hidden])");
-  await page.click(`[data-demo-login="${who}"]`);
+  await page.click(`[data-test-login="${who}"]`);
   await page.waitForSelector("#appShell:not([hidden])");
   await page.waitForTimeout(500);
 }
 
+/** 화면 이동: 넓은 화면은 위쪽 탭, 휴대폰 폭은 아래쪽 메뉴나 '더보기' 전체 메뉴 */
 async function tab(page, name) {
-  await page.click(`#mainTabs [data-view="${name}"]`);
+  if (await page.isVisible(`#mainTabs [data-view="${name}"]`)) await page.click(`#mainTabs [data-view="${name}"]`);
+  else if (await page.isVisible(`#bottomNav [data-view="${name}"]`)) await page.click(`#bottomNav [data-view="${name}"]`);
+  else {
+    await page.click("#bnMore");
+    await page.click(`#moreSheet [data-view="${name}"]`);
+  }
   await page.waitForTimeout(400);
 }
 
@@ -68,18 +74,20 @@ function fakeArtifactHost() {
 (async () => {
   const browser = await chromium.launch();
   try {
-    // 1) 처음 여는 브라우저(빈 저장소): 데모 계정 버튼으로 관리자 로그인
+    // 1) 처음 여는 브라우저(빈 저장소): 로그인 화면의 시험(데모) 계정 버튼으로 관리자 로그인
     const ctx = await browser.newContext({ acceptDownloads: true, viewport: { width: 1280, height: 860 } });
     const page = await ctx.newPage();
     watch(page);
     await page.goto(BASE);
     await page.waitForSelector("#loginForm:not([hidden])");
-    assert(await page.isVisible(".demo-accounts"), "데모 계정 버튼 표시");
+    assert(await page.isVisible("#testAccounts"), "시험(데모) 계정 버튼 표시");
+    assert(await page.locator("#testAccountList .ta-item").count() === 3, "데모 계정 3개");
+    assert(/demo1234/.test(await page.textContent("#testAccountList")), "비밀번호 안내");
     await shot(page, "d1_login");
     await demoLogin(page, "admin");
     assert(await page.isVisible(".demo-banner"), "데모 안내 띠 표시");
     await shot(page, "d2_dashboard");
-    step("데모 계정 버튼으로 관리자 로그인");
+    step("시험(데모) 계정 버튼으로 관리자 로그인");
 
     // 2) 삭제: 화면 안 확인 창에서 취소하면 그대로, 확인하면 1건 줄어듦
     await tab(page, "income");
@@ -130,7 +138,7 @@ function fakeArtifactHost() {
     await page.click("#themeToggle");  // 자동 → 라이트 → 다크
     assert(await page.evaluate(() => document.documentElement.dataset.theme) === "dark", "다크 모드");
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const t of ["dashboard", "report", "analysis", "targets", "income", "balances", "data"]) {
+    for (const t of ["dashboard", "report", "forecast", "mix", "analysis", "targets", "income", "balances", "data"]) {
       await tab(page, t);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert(overflow <= 1, `${t} 모바일 가로 넘침 ${overflow}px`);

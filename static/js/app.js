@@ -16,6 +16,10 @@
   };
   const daysSince = s => Math.max(0, Math.round((new Date(todayStr() + "T00:00:00") - new Date(s + "T00:00:00")) / 86400000));
 
+  // 휴대폰 폭: 아래쪽 메뉴·내역 카드·등록 폼 접기 (style.css의 760px 기준과 같게)
+  const narrowMQ = window.matchMedia("(max-width: 760px)");
+  const isNarrow = () => narrowMQ.matches;
+
   let CODES = {};
   let META = { years: [], today: todayStr() };
   let USER = null;
@@ -125,13 +129,15 @@
     else document.documentElement.dataset.theme = id;
     const t = THEMES.find(t => t.id === id) || THEMES[0];
     $("themeToggle").textContent = t.label;
+    $("sheetTheme").textContent = `화면 모드: ${t.label.replace(/^\S+\s/, "")} (누르면 바꿈)`;
   }
   function currentTheme() {
     let saved = null;
     try { saved = localStorage.getItem(THEME_KEY); } catch (_e) { /* 저장소 사용 불가 */ }
     return THEMES.some(t => t.id === saved) ? saved : "auto";
   }
-  $("themeToggle").addEventListener("click", () => {
+  $("themeToggle").addEventListener("click", cycleTheme);
+  function cycleTheme() {
     const idx = THEMES.findIndex(t => t.id === currentTheme());
     const next = THEMES[(idx + 1) % THEMES.length].id;
     try { localStorage.setItem(THEME_KEY, next); } catch (_e) { /* 무시 */ }
@@ -139,7 +145,7 @@
     // 차트는 렌더 시점에 색을 고정하므로 현재 화면을 다시 그린다
     const active = currentView();
     if (active && refreshers[active]) refreshers[active]();
-  });
+  }
   applyTheme(currentTheme());
   // 차트는 그릴 때 상자 폭에 맞추므로, 창 폭이 크게 바뀌면(휴대폰 회전 등) 지금 화면을 다시 그린다
   let lastWidth = window.innerWidth;
@@ -149,21 +155,65 @@
     const active = currentView();
     if (appReady && active && refreshers[active]) refreshers[active]();
   }, 300));
+  // 휴대폰 폭 경계를 넘으면(내역 표 ↔ 카드) 바로 다시 그린다
+  narrowMQ.addEventListener("change", () => {
+    const active = currentView();
+    if (appReady && active && refreshers[active]) refreshers[active]();
+  });
 
   // ---------------------------------------------------------------- 로그인 · 처음 설정
   const ROLE_RANK = { viewer: 1, staff: 2, admin: 3 };
   const can = role => USER && ROLE_RANK[USER.role] >= ROLE_RANK[role];
+
+  // 시험 계정(로그인 화면의 바로 들어가기 버튼): 서버의 시험 모드나 데모일 때만 /api/auth/state가 알려 준다
+  const TEST_ROLE_DESC = {
+    admin: "모든 기능 · 목표·코드·사용자·백업 관리 포함",
+    staff: "매출·지출 등록·수정, 엑셀로 입력하기",
+    viewer: "보기와 엑셀 받기만 (세무사·동업자용)",
+  };
+  let testAccounts = [];
+  function renderTestAccounts(list) {
+    testAccounts = Array.isArray(list) ? list : [];
+    $("testAccounts").hidden = !testAccounts.length;
+    $("authScreen").classList.toggle("has-test", !!testAccounts.length);
+    $("testAccountList").innerHTML = testAccounts.map((a, i) =>
+      `<button type="button" class="ta-item" data-test-login="${esc(a.username)}" data-idx="${i}">` +
+      `<span class="ta-main"><span class="ta-role role-${esc(a.role)}">${esc(a.role_label)}</span>` +
+      `<span class="ta-name">${esc(a.name)}</span></span>` +
+      `<span class="ta-desc">${esc(TEST_ROLE_DESC[a.role] || "")}</span>` +
+      `<span class="ta-cred">아이디 <code>${esc(a.username)}</code> · 비밀번호 <code>${esc(a.password)}</code></span>` +
+      `<span class="ta-go" aria-hidden="true">들어가기 →</span></button>`).join("");
+  }
+  $("testAccountList").addEventListener("click", async e => {
+    const b = e.target.closest("[data-test-login]");
+    if (!b || b.disabled) return;
+    const a = testAccounts[+b.dataset.idx];
+    if (!a) return;
+    $("loginError").textContent = "";
+    b.disabled = true;
+    try {
+      const r = await post("/api/auth/login", { username: a.username, password: a.password, remember: true });
+      await startApp(r.user);
+    } catch (err) {
+      $("loginError").textContent = err.message;
+    } finally {
+      b.disabled = false;
+    }
+  });
 
   function showAuth(mode, notice) {
     $("appShell").hidden = true;
     $("authScreen").hidden = false;
     $("loginForm").hidden = mode !== "login";
     $("setupForm").hidden = mode !== "setup";
+    $("testAccounts").hidden = mode !== "login" || !testAccounts.length;
     if (mode === "login") {
       if (notice) $("loginNotice").textContent = notice;
+      else if (testAccounts.length) $("loginNotice").textContent = "실제 계정이 있으면 아이디와 비밀번호로 로그인하세요.";
       $("loginError").textContent = "";
       $("loginPass").value = "";
-      setTimeout(() => ($("loginUser").value ? $("loginPass") : $("loginUser")).focus(), 0);
+      // 휴대폰에서 시험 계정 목록을 가리지 않게, 시험 계정이 있으면 입력칸에 자동으로 커서를 두지 않는다
+      if (!testAccounts.length) setTimeout(() => ($("loginUser").value ? $("loginPass") : $("loginUser")).focus(), 0);
     } else {
       setTimeout(() => $("setupCode").focus(), 0);
     }
@@ -174,7 +224,9 @@
     document.body.classList.remove("role-admin", "role-staff", "role-viewer");
     document.body.classList.add("role-" + user.role);
     $("userName").textContent = user.name;
-    $("userRole").textContent = user.role_label;
+    $("userRole").textContent = user.role_label + (user.is_test ? " · 시험 계정" : "");
+    $("menuPassword").hidden = !!user.is_test;  // 시험 계정은 비밀번호를 바꿀 수 없음
+    $("sheetPassword").hidden = !!user.is_test;
     $("userAvatar").textContent = (user.name || "?").trim().slice(0, 1).toUpperCase();
     $("authScreen").hidden = true;
     $("appShell").hidden = false;
@@ -237,17 +289,19 @@
   });
   document.addEventListener("click", e => { if (!e.target.closest(".user-menu")) closeUserMenu(); });
   document.addEventListener("keydown", e => { if (e.key === "Escape") closeUserMenu(); });
-  $("menuLogout").addEventListener("click", async () => {
+  async function logout() {
     closeUserMenu();
     try { await post("/api/auth/logout"); } catch (_e) { /* 이미 만료 */ }
     location.reload();
-  });
-  $("menuPassword").addEventListener("click", () => {
+  }
+  function openPasswordDialog() {
     closeUserMenu();
     $("pwForm").reset();
     $("pwError").textContent = "";
     $("pwDialog").showModal();
-  });
+  }
+  $("menuLogout").addEventListener("click", logout);
+  $("menuPassword").addEventListener("click", openPasswordDialog);
   $("pwForm").addEventListener("submit", async e => {
     e.preventDefault();
     if ($("pwNew").value !== $("pwNew2").value) {
@@ -264,22 +318,73 @@
     b.addEventListener("click", () => b.closest("dialog").close()));
 
   // ---------------------------------------------------------------- tabs
-  const views = ["dashboard", "income", "expense", "balances", "report", "analysis", "targets",
+  const views = ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets",
     "data", "codes", "users"];
   const ADMIN_VIEWS = new Set(["codes", "users"]);
   const refreshers = {};
   const viewAllowed = name => views.includes(name) && (!ADMIN_VIEWS.has(name) || can("admin"));
   const currentView = () => views.find(v => !$("view-" + v).hidden);
+  const BOTTOM_VIEWS = new Set(["dashboard", "income", "expense", "report"]);
   function showView(name) {
     if (!viewAllowed(name)) name = "dashboard";
+    const changed = currentView() !== name;
     views.forEach(v => { $("view-" + v).hidden = v !== name; });
     document.querySelectorAll("#mainTabs .tab").forEach(b =>
       b.classList.toggle("active", b.dataset.view === name));
+    document.querySelectorAll("#bottomNav [data-view], #moreSheet [data-view]").forEach(b =>
+      b.classList.toggle("active", b.dataset.view === name));
+    $("bnMore").classList.toggle("active", !BOTTOM_VIEWS.has(name));
+    closeSheet();
+    if (changed && isNarrow()) window.scrollTo(0, 0);
     if (refreshers[name]) refreshers[name]();
   }
   $("mainTabs").addEventListener("click", e => {
     const btn = e.target.closest(".tab");
     if (btn) showView(btn.dataset.view);
+  });
+
+  // 휴대폰: 아래쪽 메뉴와 '더보기' 전체 메뉴
+  function openSheet() {
+    $("moreSheet").hidden = false;
+    $("bnMore").setAttribute("aria-expanded", "true");
+    const first = $("moreSheet").querySelector(".sheet-grid button:not([hidden])");
+    if (first) first.focus({ preventScroll: true });
+  }
+  function closeSheet() {
+    if ($("moreSheet").hidden) return;
+    $("moreSheet").hidden = true;
+    $("bnMore").setAttribute("aria-expanded", "false");
+  }
+  $("bottomNav").addEventListener("click", e => {
+    const b = e.target.closest("button");
+    if (!b) return;
+    if (b.id === "bnMore") { if ($("moreSheet").hidden) openSheet(); else closeSheet(); }
+    else showView(b.dataset.view);
+  });
+  $("moreSheet").addEventListener("click", e => {
+    if (e.target.closest("[data-sheet-close]")) { closeSheet(); return; }
+    const v = e.target.closest("[data-view]");
+    if (v) showView(v.dataset.view);
+  });
+  document.addEventListener("keydown", e => { if (e.key === "Escape") closeSheet(); });
+  $("sheetTheme").addEventListener("click", cycleTheme);
+  $("sheetPassword").addEventListener("click", () => { closeSheet(); openPasswordDialog(); });
+  $("sheetLogout").addEventListener("click", logout);
+
+  // 등록 폼 접기(휴대폰): 목록을 먼저 보고, 버튼으로 폼을 펼친다
+  function setFormOpen(cardId, open) {
+    const card = $(cardId);
+    card.classList.toggle("collapsed", !open);
+    const b = card.querySelector("[data-form-toggle]");
+    b.setAttribute("aria-expanded", String(open));
+    b.textContent = open ? "접기" : (cardId === "incFormCard" ? "+ 새 매출 등록" : "+ 새 지출 등록");
+    b.classList.toggle("primary", !open);
+  }
+  document.addEventListener("click", e => {
+    const b = e.target.closest("[data-form-toggle]");
+    if (!b) return;
+    const id = b.dataset.formToggle;
+    setFormOpen(id, $(id).classList.contains("collapsed"));
   });
 
   // ---------------------------------------------------------------- 기간 선택 (목록·내보내기 공통)
@@ -535,6 +640,7 @@
    */
   function entryTable(rows, kind, summary) {
     if (!rows.length) return '<p class="empty-msg">조건에 맞는 내역이 없습니다.</p>';
+    if (isNarrow()) return entryCards(rows, kind, summary);
     const isInc = kind === "income";
     // 좁은 카드에서도 금액이 먼저 보이도록 일자 다음에 금액을 배치한다
     const head = isInc
@@ -579,6 +685,37 @@
     const totalRow = `<tr class="total-row"><td>${label}</td><td class="num">${fmt(total)}</td>${tail}</tr>`;
     return `<table class="data has-actions"><thead><tr>${head}</tr></thead>` +
       `<tbody>${body}${totalRow}</tbody></table>`;
+  }
+
+  /** 휴대폰 폭의 내역: 한 건에 한 장(금액·구분·차량·거래처, 미수·미지급 표시, 수정·삭제) */
+  function entryCards(rows, kind, summary) {
+    const isInc = kind === "income";
+    const cards = rows.map(r => {
+      const cur = r.currency && r.currency !== "KRW" ? ` <span class="tag cur">${esc(r.currency)}</span>` : "";
+      const car = isInc ? [r.manufacturer && r.manufacturer !== "N/A" ? r.manufacturer : "", r.car_model].filter(Boolean).join(" ") : "";
+      const what = (isInc ? [r.category, car] : [r.item]).filter(Boolean).join(" · ");
+      const sub = [r.client, r.payment_type, r.memo].filter(Boolean).join(" · ");
+      const flags = [];
+      if (isInc && r.receivable > 0) flags.push(`<span class="due">미수 ${fmtWon(r.receivable)}</span>`);
+      if (isInc && r.payout > 0) {
+        flags.push(r.payout_due > 0 ? `<span class="due">미지급 ${fmtWon(r.payout_due)}</span>`
+          : `<span class="muted">거래처 지급 ${fmtWon(r.payout)} 완료</span>`);
+      }
+      if (!isInc && r.payable > 0) flags.push(`<span class="due">미지급 ${fmtWon(r.payable)}</span>`);
+      return `<article class="entry-card">` +
+        `<div class="ec-top"><span class="ec-date">${esc(r.trx_date.slice(5).replace("-", "/"))} <span class="wd">${esc(r.weekday)}</span></span>` +
+        `<span class="tag">${esc(isInc ? r.income_type : r.expense_type)}</span>` +
+        `<span class="ec-amount">${fmtWon(r.amount)}${cur}</span></div>` +
+        (what ? `<div class="ec-what">${esc(what)}</div>` : "") +
+        (flags.length ? `<div class="ec-flags">${flags.join("")}</div>` : "") +
+        `<div class="ec-foot"><span class="ec-sub">${esc(sub)}</span>` +
+        `<span class="ec-actions need-staff"><button class="icon-btn" data-edit="${kind}:${r.id}">수정</button>` +
+        `<button class="icon-btn del" data-del="${kind}:${r.id}">삭제</button></span></div></article>`;
+    }).join("");
+    const count = summary ? summary.total : rows.length;
+    const total = summary ? summary.sum.amount : rows.reduce((a, r) => a + r.amount, 0);
+    const label = summary && summary.total > rows.length ? `전체 ${fmt(count)}건 합계` : `합계 · ${fmt(count)}건`;
+    return `<div class="entry-cards">${cards}<div class="ec-total"><span>${label}</span><b>${fmtWon(total)}</b></div></div>`;
   }
 
   /** 페이지 이동 버튼: ‹ 1 … 4 5 [6] 7 8 … 20 › */
@@ -726,10 +863,11 @@
     $("incPayout").value = r.payout || 0;
     $("incPayoutPaid").checked = (r.payout || 0) > 0 && !(r.payout_due > 0);
     showSalesLine();
+    setFormOpen("incFormCard", true);
     $("incomeFormTitle").textContent = `매출 수정 (#${r.id})`;
     $("incMeta").textContent = auditText(r);
     $("incSubmit").textContent = "수정 저장";
-    $("incomeForm").scrollIntoView({ block: "nearest" });
+    $(isNarrow() ? "incFormCard" : "incomeForm").scrollIntoView({ block: isNarrow() ? "start" : "nearest" });
   }
 
   function fillExpenseForm(r) {
@@ -750,10 +888,11 @@
     $("expAmount").value = r.amount;
     $("expMemo").value = r.memo || "";
     $("expPayable").value = r.payable || 0;
+    setFormOpen("expFormCard", true);
     $("expenseFormTitle").textContent = `지출 수정 (#${r.id})`;
     $("expMeta").textContent = auditText(r);
     $("expSubmit").textContent = "수정 저장";
-    $("expenseForm").scrollIntoView({ block: "nearest" });
+    $(isNarrow() ? "expFormCard" : "expenseForm").scrollIntoView({ block: isNarrow() ? "start" : "nearest" });
   }
 
   // ---------------------------------------------------------------- 통계 카드
@@ -900,8 +1039,8 @@
     $("dashDate").value = isoOf(d);
     refreshers.dashboard();
   }
-  $("dashAddIncome").addEventListener("click", () => { showView("income"); resetIncomeForm($("dashDate").value); });
-  $("dashAddExpense").addEventListener("click", () => { showView("expense"); resetExpenseForm($("dashDate").value); });
+  $("dashAddIncome").addEventListener("click", () => { showView("income"); resetIncomeForm($("dashDate").value); setFormOpen("incFormCard", true); });
+  $("dashAddExpense").addEventListener("click", () => { showView("expense"); resetExpenseForm($("dashDate").value); setFormOpen("expFormCard", true); });
 
   // ---------------------------------------------------------------- 미수금·미지급금
   // 완료 처리 대상: 매출 미수금(받을 돈), 지출 미지급금(외상), 매출의 거래처 미지급금(매출차감)
@@ -1562,7 +1701,7 @@
       usersCache = await api("/api/users");
       $("userList").innerHTML = `<table class="data has-actions"><thead><tr><th>이름</th><th>아이디</th><th>권한</th>` +
         `<th>상태</th><th>마지막 로그인</th><th></th></tr></thead><tbody>` +
-        usersCache.map(u => `<tr class="${u.active ? "" : "off"}"><td class="strong">${esc(u.name)}${u.id === USER.id ? ' <span class="tag">나</span>' : ""}</td>` +
+        usersCache.map(u => `<tr class="${u.active ? "" : "off"}"><td class="strong">${esc(u.name)}${u.id === USER.id ? ' <span class="tag">나</span>' : ""}${u.is_test ? ' <span class="tag test">시험 계정</span>' : ""}</td>` +
           `<td>${esc(u.username)}</td><td><span class="tag role-${esc(u.role)}">${esc(u.role_label)}</span></td>` +
           `<td>${u.active ? '<span class="status ok">사용 중</span>' : '<span class="status warn">사용 중지</span>'}</td>` +
           `<td class="date">${esc((u.last_login_at || "-").slice(0, 16))}</td>` +
@@ -1637,6 +1776,12 @@
     metric, metricStrip, saveBlob, todayStr, loadTargets, invalidateTargets, agg, fillSelect,
   });
 
+  // 추세·예측 · 브랜드·차종·수리 유형 화면 (insights.js)
+  window.WellcarInsights({
+    $, api, esc, fmt, fmtWon, toast, getCss, refreshers, nextReq, isStale,
+    metric, metricStrip, saveBlob, todayStr, loadTargets,
+  });
+
   async function init() {
     await loadMeta();
     $("dashDate").value = todayStr();
@@ -1649,6 +1794,7 @@
   async function boot() {
     try {
       const st = await api("/api/auth/state");
+      renderTestAccounts(st.test_accounts);
       if (st.setup_required) showAuth("setup");
       else if (!st.user) showAuth("login");
       else await startApp(st.user);
