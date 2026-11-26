@@ -59,16 +59,21 @@ DEMO_CSS = """
 .demo-banner .btn { padding: 3px 10px; font-size: var(--fs-micro); }
 """
 
-# mock_api.js가 xlsx_writer.js(XlsxWriter)를 쓰므로 그 뒤에, 화면 스크립트보다 앞에 둔다
+# mock_api.js가 xlsx_writer.js(XlsxWriter)와 seed_data.js(데모 내역 생성기)를 쓰므로 그 뒤에, 화면 스크립트보다 앞에 둔다.
+# 화면 스크립트는 static/index.html이 불러오는 순서와 같아야 한다(새 파일을 만들면 여기에도 추가 — 다르면 빌드가 멈춘다).
 SCRIPTS = [
     ("static", "js", "xlsx_writer.js"),
+    ("demo", "seed_data.js"),
     ("demo", "mock_api.js"),
     ("demo", "demo_shell.js"),
     ("static", "js", "xlsx_import.js"),
     ("static", "js", "metrics.js"),
     ("static", "js", "charts.js"),
     ("static", "js", "reports.js"),
+    ("static", "js", "hubkit.js"),
     ("static", "js", "insights.js"),
+    ("static", "js", "sales.js"),
+    ("static", "js", "costs.js"),
     ("static", "js", "app.js"),
 ]
 
@@ -76,6 +81,11 @@ SCRIPTS = [
 def build():
     html = read("static", "index.html")
     body = re.search(r"<body>(.*)</body>", html, re.S).group(1)
+    # 화면이 불러오는 스크립트를 하나라도 빠뜨리면 데모에서 그 화면이 비므로 여기서 멈춘다
+    wanted = sorted(re.findall(r'<script src="js/([^"]+)"></script>', body))
+    have = sorted(parts[-1] for parts in SCRIPTS if parts[0] == "static")
+    if wanted != have:
+        sys.exit(f"빌드 실패: static/index.html이 불러오는 스크립트와 SCRIPTS가 다릅니다.\n  화면: {wanted}\n  빌드: {have}")
     body = re.sub(r"\s*<script src=\"[^\"]+\"></script>", "", body)
 
     body = replace_once(body, '<div id="appShell" hidden>\n', '<div id="appShell" hidden>\n' + BANNER)

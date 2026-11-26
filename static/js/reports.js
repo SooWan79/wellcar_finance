@@ -1,4 +1,4 @@
-/* 경영현황 · 매출·비용 분석 · 목표·실적 화면.
+/* 경영현황 · 맞춤 집계 · 목표·실적 화면.
    app.js가 WellcarReports(ctx)로 연결한다(ctx: 요청·표시 도우미). 계산은 metrics.js가 한다. */
 (function () {
   "use strict";
@@ -164,8 +164,78 @@
         ]);
         if (isStale("report", req)) return;
         renderReport(p, plan, bks, inc, exp, T, { byCat, byBrand, byExp, byAcct, byPay, bal });
+        loadTrend(p, req);
       } catch (err) { toast(err.message, true); }
     };
+
+    // 기간별 손익 추이: 고른 단위로 최근 몇 기간을 나란히 (고른 기간이 맨 위)
+    const TREND_N = { day: 14, week: 12, month: 12, quarter: 8, year: 5 };
+    async function loadTrend(p, req) {
+      const today = todayStr(), n = TREND_N[p.unit];
+      const rows = [];
+      for (let i = 0; i < n; i++) {
+        const q = M.shift(p, -i), plan = M.comparePlan(q, today);
+        rows.push({ p: q, plan, sel: i === 0 });
+      }
+      const spans = rows.flatMap(r => [r.plan.cur, r.plan.prevRange, r.plan.lyRange]).filter(Boolean);
+      if (!spans.length) { $("rpTrend").innerHTML = '<p class="empty-msg">아직 시작하지 않은 기간입니다.</p>'; return; }
+      const from = spans.reduce((a, s) => (s.from < a ? s.from : a), spans[0].from);
+      const to = spans.reduce((a, s) => (s.to > a ? s.to : a), spans[0].to);
+      try {
+        const [inc, exp] = await Promise.all([agg("incomes", from, to, "date"), agg("expenses", from, to, "date")]);
+        if (isStale("report", req)) return;
+        renderTrend(p, rows, inc, exp);
+      } catch (err) { toast(err.message, true); }
+    }
+
+    function renderTrend(p, rows, inc, exp) {
+      const unit = p.unit, showLy = unit !== "year";
+      for (const r of rows) {
+        r.k = r.plan.cur ? M.metricsFor(inc, exp, r.plan.cur) : null;
+        r.kp = r.plan.prevRange ? M.metricsFor(inc, exp, r.plan.prevRange) : null;
+        r.kl = r.plan.lyRange ? M.metricsFor(inc, exp, r.plan.lyRange) : null;
+      }
+      $("rpTrendTitle").textContent = `기간별 손익 추이 — 최근 ${rows.length}${{ day: "일", week: "주", month: "개월", quarter: "분기", year: "년" }[unit]}`;
+      $("rpTrendMeta").textContent = `증감은 실매출 기준 · 진행 중인 기간은 같은 날짜 수까지 비교 · 줄을 누르면 그 기간으로 이동`;
+      // 차트: 오래된 기간부터. 실매출·지출 막대 + 영업이익 선
+      const asc = rows.slice().reverse();
+      WCharts.groupedBars($("rpTrendChart"), asc.map(r => M.periodTick(unit, r.p.start)), [
+        { name: "실매출", color: getCss("--series-income"), values: asc.map(r => (r.k ? r.k.sales : null)) },
+        { name: "지출", color: getCss("--series-expense"), values: asc.map(r => (r.k ? r.k.expense : null)) },
+      ], {
+        lines: [{ name: "영업이익", color: getCss("--series-profit"), values: asc.map(r => (r.k ? r.k.profit : null)) }],
+        titleFn: (_l, i) => M.periodName(unit, asc[i].p.start) + (asc[i].plan.progress.state === "current" ? " (진행 중)" : ""),
+        ariaLabel: "기간별 실매출·지출·영업이익",
+      });
+      const chg = (a, b) => (b ? changeChip(M.pctChange(a.sales, b.sales), true) : dash);
+      // 휴대폰에서는 짧은 기간 이름과 만 원 단위 금액으로 줄여 한 화면에 들어오게 한다
+      const man = v => `${v < 0 ? "−" : ""}${Math.abs(Math.round(v / 10000)).toLocaleString("ko-KR")}만`;
+      const won = v => `<span class="only-wide">${fmtWon(v)}</span><span class="only-narrow">${man(v)}</span>`;
+      const body = rows.map(r => {
+        const k = r.k, st = r.plan.progress.state;
+        const name = `<span class="only-wide">${esc(M.periodName(unit, r.p.start))}</span><span class="only-narrow">${esc(M.periodTick(unit, r.p.start))}</span>` +
+          (st === "current" ? ' <span class="tag cur">진행 중</span>' : "");
+        if (!k) return `<tr class="off"><td class="date">${name}</td><td class="num" colspan="${showLy ? 8 : 7}">아직 시작 전</td></tr>`;
+        return `<tr class="pick-row${r.sel ? " cur-row" : ""}" data-start="${r.p.start}" tabindex="0" role="button" aria-label="${esc(M.periodName(unit, r.p.start))}로 이동">` +
+          `<td class="date">${name}</td><td class="num strong">${won(k.sales)}</td><td class="num opt">${fmtWon(k.expense)}</td>` +
+          `<td class="num strong ${k.profit < 0 ? "neg" : ""}">${won(k.profit)}</td><td class="num opt">${fmtPct(k.margin)}</td>` +
+          `<td class="num opt">${fmt(k.cnt)}</td><td class="num opt">${k.avg_ticket === null ? dash : fmtWon(k.avg_ticket)}</td>` +
+          `<td class="num">${chg(k, r.kp)}</td>${showLy ? `<td class="num opt">${chg(k, r.kl)}</td>` : ""}</tr>`;
+      }).join("");
+      $("rpTrend").innerHTML = `<table class="data compact period-table"><thead><tr><th>기간</th><th class="num">실매출</th><th class="num opt">지출</th>` +
+        `<th class="num">영업이익</th><th class="num opt">이익률</th><th class="num opt">건수</th><th class="num opt">객단가</th>` +
+        `<th class="num">${M.PREV_LABEL[unit]} 대비</th>${showLy ? '<th class="num opt">전년 동기 대비</th>' : ""}</tr></thead><tbody>${body}</tbody></table>`;
+    }
+    function pickTrendRow(e) {
+      const tr = e.target.closest("tr[data-start]");
+      if (!tr || (e.type === "keydown" && e.key !== "Enter" && e.key !== " ")) return;
+      e.preventDefault();
+      RP.date = tr.dataset.start;
+      refreshers.report();
+      $("rpBanner").scrollIntoView({ block: "nearest" });
+    }
+    $("rpTrend").addEventListener("click", pickTrendRow);
+    $("rpTrend").addEventListener("keydown", pickTrendRow);
 
     function renderReport(p, plan, bks, inc, exp, T, extra) {
       const today = todayStr();
@@ -296,7 +366,7 @@
     $("rpPrev").addEventListener("click", () => stepReport(-1));
     $("rpNext").addEventListener("click", () => stepReport(1));
 
-    // ---------------------------------------------------------------- 매출·비용 분석
+    // ---------------------------------------------------------------- 맞춤 집계 (기준·기간 단위를 골라 만드는 집계표)
     const AN_DIMS = {
       incomes: [["manufacturer", "브랜드"], ["car_model", "차종"], ["category", "서비스 구분 (매출구분)"],
         ["income_type", "매출유형"], ["client", "거래처"], ["payment_type", "결제유형"],
@@ -517,7 +587,7 @@
       rows.push(tot);
       const widths = [30, ...(showCols ? a.cols.map(() => 12) : []), 15, ...(shareOn ? [8] : []), ...(a.cpv ? [15, 9] : [])];
       const blob = W.build([{ name: "집계", widths, freeze: "B5", rows }]);
-      const name = `웰카오디오_${a.kind === "incomes" ? "매출" : "비용"}분석_${a.dims.map(d => dimLabel(a.kind, d).replace(/ \(.*\)$/, "").replace(/\s+/g, "")).join("-")}_${a.from}_${a.to}.xlsx`;
+      const name = `웰카오디오_맞춤집계_${a.kind === "incomes" ? "매출" : "비용"}_${a.dims.map(d => dimLabel(a.kind, d).replace(/ \(.*\)$/, "").replace(/\s+/g, "")).join("-")}_${a.from}_${a.to}.xlsx`;
       try { toast(`${await saveBlob(name, blob)} 파일을 받았습니다.`); }
       catch (err) { toast(err.message, true); }
     });

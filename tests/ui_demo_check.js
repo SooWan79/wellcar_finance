@@ -7,7 +7,7 @@
 
    데모에만 있는 동작을 봅니다: 데모 계정 버튼, 브라우저 저장(새로고침 뒤 유지), 화면 안 확인 창(취소·확인),
    엑셀 저장(보통 내려받기 / 아티팩트 저장 창을 흉내 낸 경로, 입력 양식 포함), '처음 상태로'(두 번 눌러야 실행),
-   조회 전용 화면, 휴대폰 폭 다크 모드(경영리포트·분석·목표 탭 포함).
+   조회 전용 화면, 휴대폰 폭 다크 모드(경영현황·매출 분석·지출 분석·맞춤 집계·목표 탭 포함).
    일반 화면 흐름은 같은 페이지에 tests/ui_smoke.js를 돌려 확인합니다:
      BASE_URL=http://localhost:8010/preview.html UI_PASS=demo1234 LANG=C.UTF-8 NODE_PATH=$(npm root -g) node tests/ui_smoke.js
 
@@ -138,13 +138,22 @@ function fakeArtifactHost() {
     await page.click("#themeToggle");  // 자동 → 라이트 → 다크
     assert(await page.evaluate(() => document.documentElement.dataset.theme) === "dark", "다크 모드");
     await page.setViewportSize({ width: 390, height: 844 });
-    for (const t of ["dashboard", "report", "forecast", "mix", "analysis", "targets", "income", "balances", "data"]) {
+    for (const t of ["dashboard", "report", "forecast", "sales", "costs", "analysis", "targets", "income", "balances", "data"]) {
       await tab(page, t);
       const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
       assert(overflow <= 1, `${t} 모바일 가로 넘침 ${overflow}px`);
     }
+    // 분석 화면이 데모에서도 그려지는지(스크립트를 빠뜨리면 빈 화면이 된다)
+    await tab(page, "sales");
+    await page.click('#saTabs [data-tab="marketing"]');
+    await page.waitForTimeout(1200);
+    assert(await page.locator("#saRecCards .rec-card").count() === 4 && await page.locator("#saMap svg").count() === 1, "데모: 마케팅 추천");
+    await tab(page, "costs");
+    await page.click('#coTabs [data-tab="cogs"]');
+    await page.waitForTimeout(600);
+    assert(await page.locator("#coCogsChart svg").count() === 1 && /매출총이익/.test(await page.textContent("#coPnl")), "데모: 원가 분석");
     await shot(page, "d4_mobile_dark");
-    step("휴대폰 폭(390px) 다크 모드 가로 넘침 없음");
+    step("휴대폰 폭(390px) 다크 모드 가로 넘침 없음, 매출 분석·지출 분석 표시");
     await ctx.close();
 
     // 7) 아티팩트 화면: 저장 확인 창(downloads 기능)으로 엑셀 저장, 취소하면 안내

@@ -266,4 +266,174 @@ test("이번 달 마감 예상", () => {
   assert.strictEqual(last.mean, 321);
 });
 
+test("기간 구간: 범위를 일·주·월·분기·연으로 나누기", () => {
+  const months = M.periodsIn("month", "2026-09-15", "2026-11-26");
+  assert.deepStrictEqual(months.map(b => [b.key, b.from, b.to, b.full]), [
+    ["2026-09", "2026-09-15", "2026-09-30", false],
+    ["2026-10", "2026-10-01", "2026-10-31", true],
+    ["2026-11", "2026-11-01", "2026-11-26", false],
+  ]);
+  assert.strictEqual(months[1].name, "2026년 10월");
+  assert.strictEqual(months[1].tick, "26.10");
+  const weeks = M.periodsIn("week", "2026-11-01", "2026-11-26");  // 11/1은 일요일
+  assert.deepStrictEqual(weeks.map(b => [b.from, b.to, b.full]), [
+    ["2026-11-01", "2026-11-01", false], ["2026-11-02", "2026-11-08", true], ["2026-11-09", "2026-11-15", true],
+    ["2026-11-16", "2026-11-22", true], ["2026-11-23", "2026-11-26", false],
+  ]);
+  assert.strictEqual(weeks[1].name, "45주 (11/2~11/8)");
+  assert.strictEqual(M.periodsIn("day", "2026-11-24", "2026-11-26").length, 3);
+  assert.strictEqual(M.periodsIn("day", "2026-11-24", "2026-11-26")[0].name, "11/24 (화)");
+  const q = M.periodsIn("quarter", "2025-01-01", "2026-11-26");
+  assert.deepStrictEqual(q.map(b => b.tick), ["25.1Q", "25.2Q", "25.3Q", "25.4Q", "26.1Q", "26.2Q", "26.3Q", "26.4Q"]);
+  assert.strictEqual(q[7].full, false);
+  assert.deepStrictEqual(M.periodsIn("year", "2024-03-01", "2026-11-26").map(b => b.name), ["2024년", "2025년", "2026년"]);
+  assert.deepStrictEqual(M.periodsIn("month", "2026-12-01", "2026-11-01"), []);
+});
+
+test("구간의 전기·전년 동기 범위", () => {
+  const [feb] = M.periodsIn("month", "2025-02-01", "2025-02-28");
+  // 온전한 달의 전년 동기는 작년 그 달 전체(윤년 2/29 포함), 전기는 앞 달 전체
+  assert.deepStrictEqual(M.lyRangeOf("month", feb), { from: "2024-02-01", to: "2024-02-29" });
+  assert.deepStrictEqual(M.prevRangeOf("month", feb), { from: "2025-01-01", to: "2025-01-31" });
+  // 진행 중인 달(11/1~11/26): 전년·전월도 같은 26일만
+  const [nov] = M.periodsIn("month", "2026-11-01", "2026-11-26");
+  assert.deepStrictEqual(M.lyRangeOf("month", nov), { from: "2025-11-01", to: "2025-11-26" });
+  assert.deepStrictEqual(M.prevRangeOf("month", nov), { from: "2026-10-01", to: "2026-10-26" });
+  // 주는 364일 전 같은 요일
+  const [wk] = M.periodsIn("week", "2026-11-16", "2026-11-22");
+  assert.deepStrictEqual(M.lyRangeOf("week", wk), { from: "2025-11-17", to: "2025-11-23" });
+  assert.deepStrictEqual(M.prevRangeOf("week", wk), { from: "2026-11-09", to: "2026-11-15" });
+  // 3월 29~31일 조각의 전월(2월)은 28일까지뿐이라 없음
+  const [tail] = M.periodsIn("month", "2026-03-29", "2026-03-31");
+  assert.strictEqual(M.prevRangeOf("month", tail), null);
+  const [day] = M.periodsIn("day", "2026-03-01", "2026-03-01");
+  assert.deepStrictEqual(M.prevRangeOf("day", day), { from: "2026-02-28", to: "2026-02-28" });
+  assert.deepStrictEqual(M.lyRangeOf("day", day), { from: "2025-03-01", to: "2025-03-01" });
+});
+
+test("날짜 색인과 요일별 합계", () => {
+  const rows = [
+    { date: "2026-11-02", brand: "벤츠", cnt: 2, amount: 300 },   // 월
+    { date: "2026-11-02", brand: "BMW", cnt: 1, amount: 100 },
+    { date: "2026-11-09", brand: "벤츠", cnt: 1, amount: 200 },   // 월
+    { date: "2026-11-11", brand: "벤츠", cnt: 3, amount: 600 },   // 수
+    { date: "2026-10-20", brand: "벤츠", cnt: 1, amount: 50 },
+  ];
+  const cov = { from: "2026-10-01", to: "2026-11-30" };
+  const idx = M.dateIndex(rows, ["cnt", "amount"], null, cov);
+  assert.deepStrictEqual(idx.sum({ from: "2026-11-01", to: "2026-11-30" }), { days: 3, cnt: 7, amount: 1200 });
+  assert.deepStrictEqual(idx.sum({ from: "2026-11-03", to: "2026-11-08" }), { days: 0, cnt: 0, amount: 0 });
+  assert.strictEqual(idx.sum({ from: "2026-09-25", to: "2026-10-05" }), null);  // 받아 두지 않은 날짜가 걸림
+  assert.strictEqual(idx.sum(null), null);
+  const benz = M.dateIndex(rows, ["cnt", "amount"], r => r.brand === "벤츠", cov);
+  assert.strictEqual(benz.sum({ from: "2026-11-01", to: "2026-11-30" }).amount, 1100);
+  const wd = M.byWeekday(idx, { from: "2026-11-01", to: "2026-11-14" }, ["cnt", "amount"]);  // 2주: 요일마다 2일
+  assert.deepStrictEqual(wd.map(w => w.dates), [2, 2, 2, 2, 2, 2, 2]);
+  assert.deepStrictEqual([wd[0].name, wd[0].amount, wd[0].cnt, wd[0].days], ["월", 600, 4, 2]);
+  assert.deepStrictEqual([wd[2].name, wd[2].amount, wd[2].days], ["수", 600, 1]);
+  assert.strictEqual(wd[6].amount, 0);
+  // 11/1(일)~11/10(화) 10일: 일·월·화는 2번, 나머지는 1번
+  assert.deepStrictEqual(M.byWeekday(idx, { from: "2026-11-01", to: "2026-11-10" }, ["cnt"]).map(w => w.dates), [2, 2, 1, 1, 1, 1, 2]);
+  assert.strictEqual(M.byWeekday(idx, { from: "2026-09-01", to: "2026-09-30" }, ["cnt"]), null);
+  // 수준: 월 300/일, 수 300/일, 나머지 0 → 실적 없는 요일은 휴무로 봄
+  const lv = M.weekdayLevels(wd, w => w.amount);
+  assert.deepStrictEqual(lv.map(l => l.level), ["normal", "closed", "normal", "closed", "closed", "closed", "closed"]);
+  const lv2 = M.weekdayLevels([
+    { name: "월", dates: 4, days: 4, v: 400 }, { name: "화", dates: 4, days: 4, v: 200 }, { name: "수", dates: 4, days: 3, v: 100 },
+    { name: "목", dates: 4, days: 4, v: 420 }, { name: "금", dates: 4, days: 4, v: 800 }, { name: "토", dates: 4, days: 4, v: 480 },
+    { name: "일", dates: 4, days: 0, v: 0 }], w => w.v);
+  assert.deepStrictEqual(lv2.map(l => l.level), ["normal", "slow", "slow", "normal", "busy", "normal", "closed"]);
+  assert.strictEqual(Math.round(lv2[4].ratio * 100), 200);  // 금요일은 영업 요일 평균의 2배
+});
+
+test("이동 평균과 추세 요약", () => {
+  assert.deepStrictEqual(M.movingAvg([1, 2, 3, 4, 5], 3), [null, null, 2, 3, 4]);
+  assert.deepStrictEqual(M.movingAvg([1, null, 3, 4, 5], 2), [null, null, null, 3.5, 4.5]);
+  const up = M.trendSummary([100, 110, 120, 130, 140, 150], 3);
+  assert.strictEqual(up.dir, "up");
+  assert.strictEqual(Math.round(up.changePct * 10) / 10, 27.3);  // (140 − 110) ÷ 110
+  assert.strictEqual(Math.round(up.slopePct), 8);                // 10 ÷ 평균 125
+  assert.strictEqual(M.trendSummary([100, 101, 99, 100, 102, 100], 3).dir, "flat");
+  assert.strictEqual(M.trendSummary([300, 280, 260, 200, 180, 150], 3).dir, "down");
+  assert.strictEqual(M.trendSummary([1, 2, 3], 3).dir, null);    // 4개 미만이면 판단하지 않음
+  assert.strictEqual(M.trendSummary([10, 20, 30, 40, 50], 7).k, 2);  // 묶음은 절반까지만
+});
+
+test("분류별 실적과 마케팅 추천", () => {
+  const cur = new Map([
+    ["벤츠", { sales: 3000, cnt: 30 }],      // 비중 큼 + 성장 → 키우기
+    ["BMW", { sales: 2000, cnt: 20 }],       // 비중 큼 + 감소 → 되살리기
+    ["현대", { sales: 1500, cnt: 20 }],      // 비중 평균 이상, 보합 → 없음
+    ["포르쉐", { sales: 1400, cnt: 5 }],     // 객단가 280(전체 96의 2.9배), 건수 비중 작음 → 건수 늘리기
+    ["볼보", { sales: 600, cnt: 10 }],       // 비중 작음 + 급성장 → 떠오르는 곳
+    ["닛산", { sales: 100, cnt: 2 }],        // 표본 적음 → 없음
+    ["토요타", { sales: 500, cnt: 6 }],      // 새로 생김(비교 없음) → 떠오르는 곳
+  ]);
+  const cmp = new Map([
+    ["벤츠", { sales: 2500, cnt: 26 }], ["BMW", { sales: 2600, cnt: 25 }], ["현대", { sales: 1450, cnt: 19 }],
+    ["포르쉐", { sales: 1300, cnt: 5 }], ["볼보", { sales: 300, cnt: 5 }], ["닛산", { sales: 30, cnt: 1 }],
+    ["아우디", { sales: 1800, cnt: 18 }],    // 사라짐(예전엔 비중 큼) → 되살리기
+  ]);
+  const st = M.segmentStats(cur, cmp);
+  assert.strictEqual(st.total.sales, 9100);
+  assert.strictEqual(st.segs[0].key, "벤츠");
+  assert.strictEqual(Math.round(st.even * 10) / 10, 14.3);  // 실적 있는 7개로 고르게 나눈 비중
+  assert.strictEqual(Math.round(st.segs[0].growth), 20);
+  const rec = M.recommendSegments(st);
+  const tag = Object.fromEntries(rec.map(r => [r.key, r.tag]));
+  assert.deepStrictEqual(tag, { 벤츠: "grow", BMW: "recover", 현대: null, 포르쉐: "volume", 볼보: "rising", 닛산: null, 토요타: "rising", 아우디: "recover" });
+  const by = k => rec.find(r => r.key === k);
+  assert.strictEqual(by("벤츠").impact, 500);
+  assert.strictEqual(by("BMW").impact, 600);
+  assert.strictEqual(by("아우디").impact, 1800);
+  assert.strictEqual(by("아우디").growth, -100);
+  // 비교 기간이 없으면(둘 다 비교 0) 키우기·되살리기는 없다
+  const alone = M.recommendSegments(M.segmentStats(cur, new Map()));
+  assert.ok(alone.every(r => r.tag !== "grow" && r.tag !== "recover"));
+});
+
+test("마케팅 추천: 우연한 변동은 걸러 낸다", () => {
+  // 건별 금액이 고르게 100이면 제곱합 = 건수 × 100². 30건 → 40건은 z = 1000 ÷ √700000 ≈ 1.2 (우연일 수 있음)
+  const flat = n => ({ sales: n * 100, cnt: n, sq: n * 100 * 100 });
+  const cur = new Map([["벤츠", flat(40)], ["BMW", flat(90)], ["현대", flat(30)], ["볼보", flat(30)]]);
+  const cmp = new Map([["벤츠", flat(30)], ["BMW", flat(50)], ["현대", flat(62)], ["볼보", flat(31)]]);
+  const rec = M.recommendSegments(M.segmentStats(cur, cmp));
+  const by = k => rec.find(r => r.key === k);
+  assert.strictEqual(by("벤츠").tag, null);                       // +33%지만 표본이 작아 우연과 구분되지 않음
+  assert.ok(Math.abs(by("벤츠").z - 1000 / Math.sqrt(700000)) < 1e-9);
+  assert.strictEqual(by("BMW").tag, "grow");                      // 50 → 90건: z ≈ 3.4
+  assert.strictEqual(by("현대").tag, "recover");                  // 62 → 30건: z ≈ −3.3
+  assert.strictEqual(by("볼보").tag, null);
+  // 기준을 낮추면 벤츠도 잡힌다 (비중 21%는 평균 25%에 못 미쳐 '떠오르는 곳')
+  assert.strictEqual(M.recommendSegments(M.segmentStats(cur, cmp), { z: 1 }).find(r => r.key === "벤츠").tag, "rising");
+  // 큰 일 한 건이 끼어 실매출만 뛴 경우: 건수는 그대로인데 한 건이 5000 → 제곱합이 커져 z가 작다
+  const lumpy = new Map([["벤츠", { sales: 30 * 100 + 5000, cnt: 31, sq: 30 * 10000 + 5000 * 5000 }], ["BMW", flat(60)]]);
+  const base = new Map([["벤츠", flat(30)], ["BMW", flat(60)]]);
+  const one = M.recommendSegments(M.segmentStats(lumpy, base)).find(r => r.key === "벤츠");
+  assert.ok(one.growth > 150 && one.z < 2);
+  assert.strictEqual(one.tag, null);
+  // 건수 늘리기: 객단가가 높아 보여도 건별 금액이 크게 흩어져 있으면 뺀다
+  const wide = new Map([["A", flat(100)], ["B", { sales: 5 * 300, cnt: 5, sq: 100 * 100 * 4 + 1100 * 1100 }]]);   // 100×4 + 1100
+  assert.strictEqual(M.recommendSegments(M.segmentStats(wide, new Map())).find(r => r.key === "B").tag, null);
+  const tight = new Map([["A", flat(100)], ["B", { sales: 5 * 300, cnt: 5, sq: 5 * 300 * 300 + 500 }]]);          // 다섯 건 모두 300 안팎
+  assert.strictEqual(M.recommendSegments(M.segmentStats(tight, new Map())).find(r => r.key === "B").tag, "volume");
+  // 제곱합이 없으면(예전 방식) 걸러 내지 않는다
+  const plain = M.recommendSegments(M.segmentStats(new Map([["벤츠", { sales: 4000, cnt: 40 }], ["BMW", { sales: 9000, cnt: 90 }]]),
+    new Map([["벤츠", { sales: 3000, cnt: 30 }], ["BMW", { sales: 9000, cnt: 90 }]])));
+  assert.strictEqual(plain[1].key, "벤츠");
+  assert.strictEqual(plain[1].z, null);
+});
+
+test("휴면 거래처", () => {
+  const rows = [
+    { key: "동서카오디오", sales: 900, cnt: 6, last: "2026-08-01" },   // 117일 전 → 휴면
+    { key: "재즈카오디오", sales: 1200, cnt: 9, last: "2026-11-20" },  // 최근 거래 → 아님
+    { key: "수원테크", sales: 300, cnt: 1, last: "2026-05-01" },       // 1건뿐 → 아님
+    { key: "개인", sales: 5000, cnt: 80, last: "2026-07-01" },         // 제외 목록
+    { key: "닥터카오디오", sales: 1500, cnt: 4, last: "2026-09-20" },  // 67일 전 → 휴면
+  ];
+  const d = M.dormantClients(rows, "2026-11-26", { exclude: ["개인", "방문", ""] });
+  assert.deepStrictEqual(d.map(r => [r.key, r.idle]), [["닥터카오디오", 67], ["동서카오디오", 117]]);
+});
+
 console.log(`metrics.js: ${n}개 묶음 모두 통과`);

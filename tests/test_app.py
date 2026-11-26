@@ -91,6 +91,14 @@ class Base(unittest.TestCase):
         self.assertEqual(r.status_code, 201, r.get_json())
         return r.get_json()
 
+    def expense(self, c=None, **kw):
+        data = {"trx_date": "2026-03-02", "expense_type": "비용", "item": "식대", "client": "식당",
+                "amount": 10000, "payment_type": "카드", "memo": "테스트"}
+        data.update(kw)
+        r = self.post(c or self.c, "/api/expenses", data)
+        self.assertEqual(r.status_code, 201, r.get_json())
+        return r.get_json()
+
 
 class AuthTest(Base):
     def test_requires_login(self):
@@ -292,6 +300,31 @@ class EntryTest(Base):
         r = self.c.get("/api/incomes?q=100%25").get_json()  # LIKE 특수문자 안전
         self.assertEqual(r["total"], 0)
 
+    def test_list_filters_by_brand_model_category(self):
+        """분석 화면의 '내역 보기': f.<분류>=값 조건(집계 API와 같은 표기), 내보내기에도 적용"""
+        self.income(manufacturer="벤츠", car_model="E클래스", category="앰프수리", client="가", amount=100000)
+        self.income(manufacturer="벤츠", car_model="S클래스", category="탈부착", client="나", amount=200000)
+        self.income(manufacturer="BMW", car_model="X5", category="앰프수리", client="가", amount=300000)
+        self.income(manufacturer="", car_model="", category="앰프수리", client="", amount=400000)
+
+        def amounts(q):
+            return sorted(x["amount"] for x in self.c.get(f"/api/incomes?{q}").get_json()["items"])
+        self.assertEqual(amounts("f.manufacturer=벤츠"), [100000, 200000])
+        self.assertEqual(amounts("f.manufacturer=벤츠&f.category=앰프수리"), [100000])
+        self.assertEqual(amounts("f.car_model=X5"), [300000])
+        self.assertEqual(amounts("f.manufacturer="), [400000])          # 빈 값 = 미지정
+        self.assertEqual(amounts("f.client=가&q=BMW"), [300000])         # 다른 조건과 함께
+        self.assertEqual(len(amounts("f.memo=x")), 4)                   # 분류가 아닌 열은 무시
+        self.expense(expense_type="비용", item="식대", client="식당", amount=10000)
+        self.expense(expense_type="비용", item="통신비", client="통신사", amount=20000)
+        r = self.c.get("/api/expenses?f.item=식대").get_json()
+        self.assertEqual([x["amount"] for x in r["items"]], [10000])
+        self.assertEqual(r["sum"]["amount"], 10000)
+        wb = load_workbook(io.BytesIO(self.c.get("/api/export.xlsx?kind=incomes&f.manufacturer=벤츠").data))
+        self.assertEqual(wb["매출내역"].max_row, 3)  # 머리글 + 2건
+        summary = " ".join(str(c.value) for row in wb["요약"].iter_rows() for c in row if c.value)
+        self.assertIn("브랜드 '벤츠'", summary)
+
     def test_date_normalized_and_zero_amount_rejected(self):
         r = self.post(self.c, "/api/incomes", {"trx_date": "2026-3-5", "income_type": "기타", "amount": 1000})
         self.assertEqual(r.get_json()["trx_date"], "2026-03-05")
@@ -373,6 +406,20 @@ class AggregateTargetTest(Base):
         db.close()
         e = self.c.get("/api/agg?kind=expenses&from=2026-01-01&to=2026-01-31&group=year").get_json()["rows"][0]
         self.assertEqual((e["year"], e["amount"], e["cost"], e["payable"]), ("2026", 40000, 40000, 10000))
+        # 분류 5개까지(날짜 + 4개면 거의 건별): 분석 화면이 한 번 받아 화면에서 나눠 본다
+        r = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-12-31"
+                       "&group=date,manufacturer,car_model,category,client").get_json()
+        self.assertEqual(len(r["rows"]), 3)
+        self.assertEqual(self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-01-02"
+                                    "&group=date,manufacturer,car_model,category,client,account").status_code, 400)
+        # 더할 수 없는 측정값: 건별 최저·최고 금액, 수량, 첫·마지막 거래일
+        r = self.c.get("/api/agg?kind=incomes&from=2026-01-01&to=2026-12-31&group=manufacturer").get_json()
+        benz = next(x for x in r["rows"] if x["manufacturer"] == "벤츠")
+        self.assertEqual((benz["amount_min"], benz["amount_max"], benz["first_date"], benz["last_date"], benz["qty"]),
+                         (200000, 300000, "2026-01-05", "2026-01-20", 2))
+        none = self.c.get("/api/agg?kind=incomes&from=2030-01-01&to=2030-01-02").get_json()["rows"][0]
+        self.assertEqual((none["cnt"], none["amount_min"], none["last_date"]), (0, None, None))
+        self.assertEqual((e["amount_max"], e["first_date"]), (40000, "2026-01-07"))
         for q in ("kind=x&from=2026-01-01&to=2026-01-02", "kind=incomes&from=2026-02-01&to=2026-01-01",
                   "kind=incomes&from=2026-01-01&to=2026-01-02&group=memo",
                   "kind=incomes&from=2026-01-01&to=2026-01-02&group=date,date",
@@ -403,6 +450,27 @@ class AggregateTargetTest(Base):
         codes = self.c.get("/api/codes").get_json()
         benz = [c["code_value"] for c in codes["car_model"] if c["parent_value"] == "벤츠"]
         self.assertIn("E클래스", benz)
+
+
+class CompressionTest(Base):
+    def test_large_json_is_gzipped_when_accepted(self):
+        import gzip
+        import json
+        for i in range(40):
+            self.income(amount=10000 + i, memo="압축 시험 " + "가" * 30)
+        plain = self.c.get("/api/incomes?size=100")
+        self.assertIsNone(plain.headers.get("Content-Encoding"))
+        r = self.c.get("/api/incomes?size=100", headers={"Accept-Encoding": "gzip, deflate"})
+        self.assertEqual(r.headers.get("Content-Encoding"), "gzip")
+        self.assertIn("Accept-Encoding", r.headers.get("Vary", ""))
+        self.assertLess(len(r.data), len(plain.data) // 3)
+        self.assertEqual(json.loads(gzip.decompress(r.data))["total"], 40)
+        # 작은 응답과 파일은 그대로
+        small = self.c.get("/api/meta", headers={"Accept-Encoding": "gzip"})
+        self.assertIsNone(small.headers.get("Content-Encoding"))
+        xlsx = self.c.get("/api/export.xlsx", headers={"Accept-Encoding": "gzip"})
+        self.assertIsNone(xlsx.headers.get("Content-Encoding"))
+        self.assertEqual(xlsx.data[:2], b"PK")
 
 
 class HardeningTest(Base):

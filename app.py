@@ -1,4 +1,5 @@
 """웰카오디오 매출/지출관리 시스템 - Flask 백엔드"""
+import gzip
 import hmac
 import math
 import mimetypes
@@ -541,8 +542,27 @@ def guard_api():
     return None
 
 
+GZIP_MIN_BYTES = 1024
+
+
+def _gzip_json(resp):
+    """JSON 응답이 크면 gzip으로 줄인다(분석 화면의 집계 자료는 글자 수가 많아 1/10쯤으로 줄어듦)."""
+    if (resp.direct_passthrough or resp.mimetype != "application/json" or not 200 <= resp.status_code < 300
+            or "Content-Encoding" in resp.headers
+            or "gzip" not in request.headers.get("Accept-Encoding", "").lower()):
+        return resp
+    data = resp.get_data()
+    if len(data) < GZIP_MIN_BYTES:
+        return resp
+    resp.set_data(gzip.compress(data, compresslevel=5))
+    resp.headers["Content-Encoding"] = "gzip"
+    resp.vary.add("Accept-Encoding")
+    return resp
+
+
 @app.after_request
 def security_headers(resp):
+    resp = _gzip_json(resp)
     resp.headers.setdefault("X-Content-Type-Options", "nosniff")
     resp.headers.setdefault("X-Frame-Options", "DENY")
     resp.headers.setdefault("Referrer-Policy", "same-origin")
@@ -904,6 +924,12 @@ def _escape_like(s):
     return s.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
 
 
+def _dim_filters(table, args):
+    """요청의 f.<분류>=값 조건 중 그 표의 분류(AGG_DIMS)에 해당하는 것. [(열, 값)]"""
+    return [(key[2:], value) for key, value in args.items()
+            if key.startswith("f.") and key[2:] in AGG_DIMS[table]]
+
+
 def _entry_filters(table, args):
     """목록·내보내기 공통 조건절. (' WHERE ...', params)"""
     where, params = [], []
@@ -919,6 +945,9 @@ def _entry_filters(table, args):
         params.append(args["payment"])
     if args.get("outstanding") in ("1", "true"):
         where.append(f"{BALANCE_FIELD[table]} > 0")
+    for dim, value in _dim_filters(table, args):  # f.<분류>=값 (집계 API와 같은 표기, 빈 값은 '미지정')
+        where.append(f"COALESCE({dim},'') = ?")
+        params.append(value)
     for word in (args.get("q") or "").split()[:5]:  # 여러 단어는 모두 포함(AND)
         ors = [f"{f} LIKE ? ESCAPE '\\'" for f in SEARCH_FIELDS[table]]
         params += [f"%{_escape_like(word)}%"] * len(ors)
@@ -1156,13 +1185,20 @@ AGG_DIMS = {
 AGG_TIME = {"date": "trx_date", "month": "substr(trx_date,1,7)", "year": "substr(trx_date,1,4)"}
 AGG_MEASURES = {
     # 현금매출(카드 외 전부)은 화면에서 amount − card로 구한다 (엑셀과 같은 기준)
+    # amount_min·amount_max(건별 최저·최고 금액 → 가격 범위), qty(수량 합), first_date·last_date(첫·마지막 거래일)는
+    # 더할 수 없는 값이라 화면에서 묶을 때 최솟값·최댓값끼리 다시 고른다. 내역이 없으면 null.
     "incomes": ("COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(vat),0) AS vat, "
                 "COALESCE(SUM(payout),0) AS payout, COALESCE(SUM(payout_due),0) AS payout_due, "
                 "COALESCE(SUM(receivable),0) AS receivable, "
-                "COALESCE(SUM(CASE WHEN payment_type='카드' THEN amount ELSE 0 END),0) AS card"),
+                "COALESCE(SUM(CASE WHEN payment_type='카드' THEN amount ELSE 0 END),0) AS card, "
+                "COALESCE(SUM(quantity),0) AS qty, MIN(amount) AS amount_min, MAX(amount) AS amount_max, "
+                "MIN(trx_date) AS first_date, MAX(trx_date) AS last_date"),
     "expenses": ("COUNT(*) AS cnt, COALESCE(SUM(amount),0) AS amount, COALESCE(SUM(payable),0) AS payable, "
-                 "COALESCE(SUM(CASE WHEN expense_type='제품원가' THEN amount ELSE 0 END),0) AS cost"),
+                 "COALESCE(SUM(CASE WHEN expense_type='제품원가' THEN amount ELSE 0 END),0) AS cost, "
+                 "MIN(amount) AS amount_min, MAX(amount) AS amount_max, "
+                 "MIN(trx_date) AS first_date, MAX(trx_date) AS last_date"),
 }
+AGG_MAX_GROUPS = 5   # 날짜 + 분류 4개면 거의 건별 자료 — 분석 화면이 한 번 받아 화면에서 나눠 본다
 AGG_MAX_ROWS = 200000
 AGG_MAX_DAYS = 366 * 30
 
@@ -1183,7 +1219,7 @@ def _parse_day(s):
 def aggregate():
     """기간 내 매출·지출을 날짜·월·연도와 분류(브랜드·차종·서비스구분 등)별로 합산한다.
 
-    ?kind=incomes|expenses&from=YYYY-MM-DD&to=YYYY-MM-DD&group=date,manufacturer (서로 다른 항목 3개까지)
+    ?kind=incomes|expenses&from=YYYY-MM-DD&to=YYYY-MM-DD&group=date,manufacturer (서로 다른 항목 5개까지)
     &f.<분류>=값 (그 값인 내역만). 손익·전기·전년 동기·목표 비교는 화면(metrics.js)이 이 결과로 계산한다."""
     kind = request.args.get("kind", "")
     if kind not in AGG_MEASURES:
@@ -1194,8 +1230,8 @@ def aggregate():
     if (d_to - d_from).days > AGG_MAX_DAYS:
         return jsonify({"error": "조회 기간이 너무 깁니다."}), 400
     groups = [g for g in (request.args.get("group") or "").split(",") if g]
-    if len(groups) > 3 or len(set(groups)) != len(groups):
-        return jsonify({"error": "group은 서로 다른 항목 3개까지입니다."}), 400
+    if len(groups) > AGG_MAX_GROUPS or len(set(groups)) != len(groups):
+        return jsonify({"error": f"group은 서로 다른 항목 {AGG_MAX_GROUPS}개까지입니다."}), 400
     exprs = []
     for g in groups:
         if g in AGG_TIME:
@@ -1372,6 +1408,11 @@ def export_xlsx():
         conds.append(f"결제유형 '{request.args['payment']}'")
     if request.args.get("outstanding") in ("1", "true"):
         conds.append("미수·미지급 남은 건만")
+    for table in (["incomes"] if inc_on else []) + (["expenses"] if exp_on else []):
+        for dim, value in _dim_filters(table, request.args):
+            text = f"{FIELD_LABELS.get(dim, dim)} '{value or '미지정'}'"
+            if text not in conds:
+                conds.append(text)
     label = {"all": "매출지출", "incomes": "매출", "expenses": "지출"}[kind]
     title = {"all": "매출/지출", "incomes": "매출", "expenses": "지출"}[kind]
     meta = {"title": f"웰카오디오 {title} 내역", "period": period, "conditions": ", ".join(conds),

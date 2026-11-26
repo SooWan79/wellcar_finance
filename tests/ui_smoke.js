@@ -25,7 +25,7 @@ const BASE = process.env.BASE_URL || "http://localhost:8000";
 const USER = process.env.UI_USER || "admin";
 const PASS = process.env.UI_PASS || "dev-pass-1234";
 const SHOT = process.env.SHOT_DIR || "";
-const TABS = ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets", "data", "codes", "users"];
+const TABS = ["dashboard", "income", "expense", "balances", "report", "forecast", "sales", "costs", "analysis", "targets", "data", "codes", "users"];
 
 const errors = [];
 const steps = [];
@@ -151,6 +151,31 @@ async function uploadExcel(page, file) {
     await page.fill("#incSearch", "");
     await page.waitForTimeout(600);
 
+    // 3-1) 매출 목록 조건: 브랜드 · 매출구분(수리 유형) — 유형을 고르면 그 유형의 구분만 남는다
+    const num = t => parseInt(String(t).replace(/[^0-9]/g, ""), 10);
+    await page.selectOption("#incBrandFilter", "벤츠");
+    await page.waitForTimeout(500);
+    const benz = num(await page.textContent("#incCount"));
+    assert(benz > 0 && benz < num(total0), `브랜드 조건으로 줄어듦 (${benz} < ${num(total0)})`);
+    await page.selectOption("#incTypeFilter", "서비스제공");
+    await page.waitForTimeout(500);
+    const catOpts = await page.$$eval("#incCategoryFilter option", os => os.map(o => o.value).filter(Boolean));
+    assert(catOpts.includes("앰프수리") && !catOpts.includes("블랙박스"), "구분 목록은 고른 유형 안에서: " + catOpts.join(","));
+    await page.selectOption("#incCategoryFilter", "앰프수리");
+    await page.waitForTimeout(500);
+    const benzAmp = num(await page.textContent("#incCount"));
+    assert(benzAmp > 0 && benzAmp < benz, `브랜드 + 구분 (${benzAmp} < ${benz})`);
+    const apiAmp = (await apiGet(page, "/api/incomes?size=1&f.manufacturer=벤츠&f.category=앰프수리")).total;
+    assert(apiAmp === benzAmp, `목록 API 조건과 같은 건수 (${apiAmp})`);
+    await page.selectOption("#incTypeFilter", "");
+    await page.selectOption("#incBrandFilter", "");
+    await page.waitForTimeout(500);
+    assert(await page.inputValue("#incCategoryFilter") === "앰프수리", "유형을 풀어도 고른 구분은 남음");
+    await page.selectOption("#incCategoryFilter", "");
+    await page.waitForTimeout(500);
+    assert(await page.textContent("#incCount") === total0, "조건을 풀면 전체");
+    step(`매출 목록 조건: 벤츠 ${benz}건 → 벤츠·앰프수리 ${benzAmp}건, 조건 풀면 ${total0}`);
+
     // 4) 매출 등록(미수금 포함) → 목록 반영
     await page.fill("#incAmount", "330000");
     await page.dispatchEvent("#incAmount", "input");
@@ -263,7 +288,17 @@ async function uploadExcel(page, file) {
       await page.waitForTimeout(700);
       assert(await page.locator("#rpTable tbody tr").count() >= 10, `경영지표 표 (${u})`);
       assert(await page.locator("#rpSalesChart svg").count() === 1, `매출 추이 차트 (${u})`);
+      const want = { day: 14, week: 12, month: 12, quarter: 8, year: 5 }[u];
+      assert(await page.locator("#rpTrend tbody tr").count() === want, `기간별 손익 추이 ${want}줄 (${u})`);
+      assert(await page.locator("#rpTrendChart svg").count() === 1, `손익 추이 차트 (${u})`);
     }
+    // 손익 추이의 줄을 누르면 그 기간으로 이동
+    const third = await page.locator("#rpTrend tr[data-start]").nth(2).getAttribute("data-start");
+    await page.locator("#rpTrend tr[data-start]").nth(2).click();
+    await page.waitForTimeout(700);
+    assert(await page.inputValue("#rpDate") === third, "손익 추이 줄을 눌러 기간 이동: " + third);
+    await page.click("#rpToday");
+    await page.waitForTimeout(600);
     await page.click("#rpPrev");
     await page.waitForTimeout(600);
     const banner = (await page.textContent("#rpBanner")).replace(/\s+/g, " ");
@@ -271,7 +306,7 @@ async function uploadExcel(page, file) {
     await shot(page, "report_prev_month");
     await page.click("#rpToday");
     await page.waitForTimeout(600);
-    step("경영현황: 일·주·월·분기·연 전환, 전기·전년 동기·목표 비교표와 차트");
+    step("경영현황: 일·주·월·분기·연 전환, 전기·전년 동기·목표 비교표와 차트, 기간별 손익 추이(눌러서 이동)");
 
     // 9-3a) 추세·예측: 이번 달 마감·다음 달·올해 예상, 범위 띠, 지출·영업이익, 브랜드 범위, 12개월
     await tab(page, "forecast");
@@ -293,47 +328,184 @@ async function uploadExcel(page, file) {
     await page.selectOption("#fcScope", brandOpt);
     await page.waitForTimeout(900);
     assert(await page.isDisabled('#fcKind [data-kind="expense"]'), "브랜드 범위는 매출만");
-    assert(/브랜드/.test(await page.textContent("#fcChartTitle")), "브랜드 예측 제목");
+    const brandName = (await page.textContent("#fcScope option:checked")).trim();
+    assert((await page.textContent("#fcChartTitle")).includes(brandName), "브랜드 예측 제목: " + brandName);
+    // 차종·지출유형 범위
+    const scopeVals = await page.$$eval("#fcScope option", os => os.map(o => o.value));
+    assert(scopeVals.some(v => v.includes("car_model")), "범위에 차종 목록");
+    const expOpt = scopeVals.find(v => v.includes("expense_type"));
+    assert(expOpt, "범위에 지출유형 목록");
+    await page.selectOption("#fcScope", expOpt);
+    await page.waitForTimeout(900);
+    assert(await page.isDisabled('#fcKind [data-kind="sales"]') && await page.isDisabled('#fcKind [data-kind="profit"]'), "지출유형 범위는 지출만");
+    assert((await page.textContent("#fcKind .on")).trim() === "지출", "지출 예측으로 바뀜");
+    assert(await page.locator("#fcTiles .kpi").count() === 4, "지출유형 예측 지표");
     await page.selectOption("#fcScope", "");
+    await page.click('#fcKind [data-kind="sales"]');
     await page.selectOption("#fcHorizon", "12");
     await page.waitForTimeout(900);
     assert(await page.locator("#fcTable tbody tr").count() === 14, "12개월 예측표");
     await page.selectOption("#fcHorizon", "6");
-    step("추세·예측: 이번 달 마감·다음 달·올해 예상, 범위 띠·계절성, 지출·영업이익, 브랜드 범위, 12개월");
+    step("추세·예측: 이번 달 마감·다음 달·올해 예상, 범위 띠·계절성, 지출·영업이익, 브랜드·차종·지출유형 범위, 12개월");
 
-    // 9-3b) 브랜드·차종·수리 유형: 목록·교차표, 브랜드 누르면 좁혀 보기, 건수, 수리·서비스만, 엑셀
-    await tab(page, "mix");
+    // 9-3b) 매출 분석: 기간별·요일별·브랜드/차종/수리·서비스 가격·마케팅 추천
+    await tab(page, "sales");
     await page.waitForTimeout(1200);
-    for (const id of ["mxBrand", "mxModel", "mxCategory"]) {
+    assert(await page.locator("#saSummary .metric").count() === 5, "매출 분석 요약 5칸");
+    assert(await page.locator("#saPeriodChart svg").count() === 1, "기간별 차트");
+    for (const u of ["day", "week", "quarter", "year", "month"]) {
+      await page.click(`#saUnit [data-unit="${u}"]`);
+      await page.waitForTimeout(300);
+      assert(await page.locator("#saPeriodTable tbody tr").count() >= 2, `기간별 표 (${u})`);
+      assert(await page.locator("#saPeriodChart svg").count() === 1, `기간별 차트 (${u})`);
+    }
+    assert(/추세/.test(await page.textContent("#saPeriodNote")), "추세 설명");
+    await shot(page, "sales_period");
+    await page.click('#saTabs [data-tab="weekday"]');
+    await page.waitForTimeout(400);
+    assert(await page.locator("#saWdTable tbody tr").count() === 7, "요일별 표 7줄");
+    assert(await page.locator("#saWdChart svg").count() === 1 && await page.locator("#saWdMatrix td.heat:not(.empty)").count() >= 6, "요일 차트·수리 유형 × 요일");
+    assert(/요일/.test(await page.textContent("#saWdNote")), "요일 설명");
+    await shot(page, "sales_weekday");
+    await page.click('#saTabs [data-tab="mix"]');
+    await page.waitForTimeout(400);
+    for (const id of ["saListBrand", "saListModel", "saListCategory"]) {
       assert(await page.locator(`#${id} .rank-row`).count() >= 3, `${id} 목록`);
     }
-    assert(await page.locator("#mxMatrix td.heat:not(.empty)").count() >= 4, "브랜드 × 수리 유형 표");
-    await shot(page, "mix");
-    const brand = (await page.textContent("#mxBrand .rank-row .rk-name")).trim();
-    await page.locator("#mxBrand .rank-row").first().click();
+    assert(await page.locator("#saMatrix td.heat:not(.empty)").count() >= 4, "브랜드 × 수리 유형 표");
+    await shot(page, "sales_mix");
+    const brand = (await page.textContent("#saListBrand .rank-row .rk-name")).trim();
+    await page.locator("#saListBrand .rank-row").first().click();
     await page.waitForTimeout(300);
-    assert(await page.isVisible("#mxChips"), "조건 표시");
-    const models = await page.$$eval("#mxModel .rk-name", els => els.map(e => e.textContent.trim()));
+    assert((await page.textContent("#saFBrand option:checked")).trim() === brand && await page.isVisible("#saClear"), "누른 브랜드가 조건 선택 상자에 반영");
+    const models = await page.$$eval("#saListModel .rk-name", els => els.map(e => e.textContent.trim()));
     assert(models.length && models.every(m => m.startsWith(brand)), `차종이 ${brand}만: ${models.slice(0, 3).join(", ")}`);
-    await page.click('#mxMeasure [data-measure="cnt"]');
+    await page.click('#saMeasure [data-measure="cnt"]');
     await page.waitForTimeout(200);
-    assert((await page.textContent("#mxBrand .rk-val")).trim().endsWith("건"), "건수 기준");
-    await page.click('#mxScope [data-scope="서비스제공"]');
+    assert((await page.textContent("#saListBrand .rk-val")).trim().endsWith("건"), "건수 기준");
+    await page.click('#saScope [data-scope="서비스제공"]');
     await page.waitForTimeout(900);
-    const cats = await page.$$eval("#mxCategory .rk-name", els => els.map(e => e.textContent.trim()));
+    const cats = await page.$$eval("#saListCategory .rk-name", els => els.map(e => e.textContent.trim()));
     assert(cats.length && !cats.some(c => ["스피커", "블랙박스", "카오디오", "앰프", "내비게이션"].includes(c)), "수리·서비스만: " + cats.join(","));
-    const [mxDl] = await Promise.all([page.waitForEvent("download"), page.click("#mxExport")]);
-    const mxPath = path.join(os.tmpdir(), "ui_" + mxDl.suggestedFilename());
-    await mxDl.saveAs(mxPath);
-    assert(fs.readFileSync(mxPath).subarray(0, 2).toString("latin1") === "PK", "브랜드·차종·수리 엑셀 파일");
-    await page.click('#mxChips [data-clear="brand"]');
-    await page.click('#mxScope [data-scope=""]');
-    await page.click('#mxMeasure [data-measure="sales"]');
-    await page.waitForTimeout(600);
-    assert(await page.isHidden("#mxChips"), "조건 지우기");
-    step(`브랜드·차종·수리 유형: 순위·추세선·교차표, ${brand} 눌러 차종 좁히기, 건수·수리만 보기, 엑셀 ${mxDl.suggestedFilename()}`);
+    // 서비스 가격: 작은 추세 차트·가격표, 나누어 보기·단위 바꾸기 (브랜드 조건이 걸린 채로)
+    await page.click('#saTabs [data-tab="price"]');
+    await page.waitForTimeout(400);
+    assert(await page.isHidden("#saMeasure") && await page.isVisible("#saPriceTools"), "가격 탭 도구");
+    const tiles = await page.locator("#saPriceGrid .mini-card").count();
+    assert(tiles >= 3 && await page.locator("#saPriceGrid svg.mini").count() === tiles, `가격 추세 차트 ${tiles}개`);
+    assert(await page.locator("#saPriceTable tbody tr").count() === tiles + 1, "가격표 (구분 + 전체)");
+    await page.click('#saPriceUnit [data-unit="month"]');
+    await page.selectOption("#saPriceDim", "car_model");
+    await page.waitForTimeout(300);
+    assert(/차종별/.test(await page.textContent("#saPriceGridTitle")) && /월별/.test(await page.textContent("#saPriceGridTitle")), "차종별·월별 가격 추이");
+    await page.selectOption("#saPriceDim", "category");
+    await shot(page, "sales_price");
+    // 내역 보기: 조건을 그대로 넘겨 매출 목록을 연다
+    await page.click("#saOpenList");
+    await page.waitForTimeout(700);
+    assert(await page.isVisible("#view-income") && await page.inputValue("#incBrandFilter") === brand && await page.inputValue("#incTypeFilter") === "서비스제공",
+      "내역 보기: 브랜드·매출유형 조건 전달");
+    assert(await page.inputValue("#incPeriod") === "custom" && num(await page.textContent("#incCount")) > 0, "내역 보기: 기간 전달");
+    await page.selectOption("#incPeriod", "all");
+    await page.selectOption("#incBrandFilter", "");
+    await page.selectOption("#incTypeFilter", "");
+    await page.waitForTimeout(400);
+    await tab(page, "sales");
+    await page.waitForTimeout(900);
+    const [saDl] = await Promise.all([page.waitForEvent("download"), page.click("#saExport")]);
+    const saPath = path.join(os.tmpdir(), "ui_" + saDl.suggestedFilename());
+    await saDl.saveAs(saPath);
+    assert(fs.readFileSync(saPath).subarray(0, 2).toString("latin1") === "PK", "매출 분석 엑셀 파일");
+    await page.click("#saClear");
+    await page.click('#saScope [data-scope=""]');
+    await page.waitForTimeout(900);
+    assert(await page.isHidden("#saClear") && await page.inputValue("#saFBrand") === "", "조건 지우기");
+    // 마케팅 추천: 추천 카드 4장, 휴면 거래처, 요일·계절, 성장–비중 지도
+    await page.click('#saTabs [data-tab="marketing"]');
+    await page.waitForTimeout(1500);
+    assert(await page.isHidden("#saTools"), "추천 탭은 값·단위 도구 숨김");
+    assert(await page.locator("#saRecCards .rec-card").count() === 4, "추천 카드 4장");
+    assert(await page.locator("#saRecCards .rec-item").count() >= 2, "추천 항목");
+    assert(await page.locator("#saMap svg").count() === 1, "성장–비중 지도");
+    assert(await page.locator("#saDormant tbody tr").count() >= 1, "거래가 끊긴 거래처");
+    assert(/요일/.test(await page.textContent("#saTiming")) && !/불러오는 중/.test(await page.textContent("#saTiming")), "요일·계절 안내");
+    await page.click('#saMapDim [data-dim="category"]');
+    await page.waitForTimeout(200);
+    assert(await page.locator("#saMap svg").count() === 1, "수리 유형 지도");
+    await page.click('#saMapDim [data-dim="manufacturer"]');
+    await shot(page, "sales_marketing");
+    const recName = (await page.textContent("#saRecCards .rec-item .rec-name")).trim();
+    await page.locator("#saRecCards .rec-item [data-rec]").first().click();
+    await page.waitForTimeout(700);
+    assert(await page.isVisible("#view-income") && num(await page.textContent("#incCount")) > 0, "추천 항목의 내역 보기");
+    await page.selectOption("#incPeriod", "all");
+    for (const id of ["#incBrandFilter", "#incCategoryFilter", "#incTypeFilter"]) await page.selectOption(id, "");
+    while (await page.locator("#incChips [data-clear]").count()) await page.locator("#incChips [data-clear]").first().click();
+    await page.waitForTimeout(400);
+    assert(await page.textContent("#incCount") !== "", "목록 조건 초기화");
+    await tab(page, "sales");
+    await page.click('#saTabs [data-tab="period"]');
+    await page.click('#saMeasure [data-measure="sales"]');
+    await page.waitForTimeout(500);
+    step(`매출 분석: 기간별(5개 단위)·요일별·브랜드/차종/수리(${brand} 좁히기·건수·수리만)·서비스 가격(${tiles}개 추세)·마케팅 추천(‘${recName}’ 등), 내역 보기, 엑셀 ${saDl.suggestedFilename()}`);
 
-    // 9-4) 매출·비용 분석: 브랜드 › 차종 피벗, 전기 대비, 엑셀로 받기
+    // 9-3c) 지출 분석: 기간별 추세·유형별·원가 분석
+    await tab(page, "costs");
+    await page.waitForTimeout(1200);
+    assert(await page.locator("#coSummary .metric").count() === 5, "지출 분석 요약 5칸");
+    assert(await page.locator("#coPeriodChart svg").count() === 1 && await page.locator("#coPeriodTable tbody tr").count() >= 2, "기간별 지출 차트·표");
+    assert(await page.locator("#coSplit .mini-card").count() >= 3, "지출유형별 추세");
+    for (const u of ["week", "quarter", "year", "month"]) {
+      await page.click(`#coUnit [data-unit="${u}"]`);
+      await page.waitForTimeout(300);
+      assert(await page.locator("#coPeriodTable tbody tr").count() >= 2, `지출 기간별 표 (${u})`);
+    }
+    await shot(page, "costs_period");
+    await page.click('#coTabs [data-tab="type"]');
+    await page.waitForTimeout(400);
+    for (const id of ["coListType", "coListItem", "coListClient"]) {
+      assert(await page.locator(`#${id} .rank-row`).count() >= 3, `${id} 목록`);
+    }
+    assert(await page.locator("#coMonthly td.heat:not(.empty)").count() >= 6, "지출유형 × 월");
+    const etype = (await page.textContent("#coListType .rank-row .rk-name")).trim();
+    await page.locator("#coListType .rank-row").first().click();
+    await page.waitForTimeout(300);
+    assert((await page.textContent("#coFType option:checked")).trim() === etype, "누른 지출유형이 조건에 반영");
+    const items = await page.$$eval("#coListItem .rk-name", els => els.map(e => e.textContent.trim()));
+    assert(items.length && items.every(t => t.endsWith(`(${etype})`)), `품목이 ${etype}만: ${items.slice(0, 3).join(", ")}`);
+    assert(/품목 × 월/.test(await page.textContent("#coMonthlyTitle")), "유형을 고르면 품목 × 월");
+    await shot(page, "costs_type");
+    await page.click('#coTabs [data-tab="cogs"]');
+    await page.waitForTimeout(500);
+    assert(await page.isVisible("#coCogsHint"), "원가 분석은 전체 지출 기준 안내");
+    assert(await page.locator("#coCogsKpi .metric").count() === 5, "원가 지표 5칸");
+    const pnlText = (await page.textContent("#coPnl")).replace(/\s+/g, " ");
+    assert(/실매출/.test(pnlText) && /매출총이익/.test(pnlText) && /영업이익/.test(pnlText), "손익 구조 표");
+    assert(await page.locator("#coCogsChart svg").count() === 1 && await page.locator("#coRateChart svg").count() === 1, "원가 차트 2개");
+    assert(await page.locator("#coCostItems .rank-row").count() >= 1 && await page.locator("#coCostVendors .rank-row").count() >= 1, "원가 품목·매입처");
+    await shot(page, "costs_cogs");
+    const k = await apiGet(page, `/api/agg?kind=expenses&from=${new Date().getFullYear()}-01-01&to=${new Date().getFullYear()}-12-31`);
+    assert(k.rows[0].cost > 0 && k.rows[0].amount_max >= k.rows[0].amount_min, "집계: 원가·최저·최고 금액");
+    const [coDl] = await Promise.all([page.waitForEvent("download"), page.click("#coExport")]);
+    const coPath = path.join(os.tmpdir(), "ui_" + coDl.suggestedFilename());
+    await coDl.saveAs(coPath);
+    assert(fs.readFileSync(coPath).subarray(0, 2).toString("latin1") === "PK", "지출 분석 엑셀 파일");
+    const vendor = (await page.textContent("#coCostVendors .rank-row .rk-name")).trim();
+    await page.locator("#coCostVendors .rank-row").first().click();
+    await page.waitForTimeout(700);
+    assert(await page.isVisible("#view-expense") && await page.inputValue("#expTypeFilter") === "제품원가", "원가 매입처 → 지출 내역");
+    assert((await page.textContent("#expChips")).includes(vendor) && num(await page.textContent("#expCount")) > 0, "거래처 조건 칩: " + vendor);
+    await page.locator("#expChips [data-clear]").first().click();
+    await page.selectOption("#expTypeFilter", "");
+    await page.selectOption("#expPeriod", "all");
+    await page.waitForTimeout(400);
+    await tab(page, "costs");
+    await page.click("#coClear");
+    await page.click('#coTabs [data-tab="period"]');
+    await page.waitForTimeout(500);
+    step(`지출 분석: 기간별 추세(유형별 작은 차트)·유형별(${etype} 좁히기, 품목 × 월)·원가 분석(손익 구조·원가율), ${vendor} 내역 보기, 엑셀 ${coDl.suggestedFilename()}`);
+
+    // 9-4) 맞춤 집계: 브랜드 › 차종 피벗, 전기 대비, 엑셀로 받기
     await tab(page, "analysis");
     await page.waitForTimeout(600);
     await page.selectOption("#anCompare", "prev");
@@ -352,7 +524,7 @@ async function uploadExcel(page, file) {
     await page.waitForTimeout(700);
     assert(await page.locator("#anTable tbody tr").count() >= 2, "지출 집계 행");
     await shot(page, "analysis");
-    step("매출·비용 분석: 브랜드›차종·서비스구분·지출유형 집계, 전기 대비, 엑셀 받기 " + anDl.suggestedFilename());
+    step("맞춤 집계: 브랜드›차종·서비스구분·지출유형 집계, 전기 대비, 엑셀 받기 " + anDl.suggestedFilename());
 
     // 9-5) 목표·실적: 작년 실적 +10%로 채워 저장
     await tab(page, "targets");
@@ -441,19 +613,30 @@ async function uploadExcel(page, file) {
     await page.setViewportSize({ width: 390, height: 844 });
     await page.waitForTimeout(300);
     assert(await page.isVisible("#bottomNav") && !(await page.isVisible("#mainTabs")), "휴대폰은 아래쪽 메뉴");
-    for (const t of ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets", "data"]) {
+    const overflowOf = () => page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    for (const t of ["dashboard", "income", "expense", "balances", "report", "forecast", "sales", "costs", "analysis", "targets", "data"]) {
       await tab(page, t);
       await page.waitForTimeout(400);
       assert(await page.isVisible(`#view-${t}`), `${t} 화면 (휴대폰)`);
-      const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+      const overflow = await overflowOf();
       assert(overflow <= 1, `${t} 모바일 가로 넘침 ${overflow}px`);
       await shot(page, `mobile_${t}`);
+      // 분석 화면은 하위 탭마다 확인
+      const sub = { sales: ["sa", ["weekday", "mix", "price", "marketing", "period"]], costs: ["co", ["type", "cogs", "period"]] }[t];
+      for (const st of sub ? sub[1] : []) {
+        await page.click(`#${sub[0]}Tabs [data-tab="${st}"]`);
+        await page.waitForTimeout(st === "marketing" ? 900 : 350);
+        assert(await page.isVisible(`#${sub[0]}Tab-${st}`), `${t} ${st} 탭 (휴대폰)`);
+        const o = await overflowOf();
+        assert(o <= 1, `${t} ${st} 모바일 가로 넘침 ${o}px`);
+        await shot(page, `mobile_${t}_${st}`);
+      }
     }
     await tab(page, "income");
     await page.waitForTimeout(500);
     assert(await page.locator("#incList .entry-card").count() >= 1, "휴대폰 매출 내역은 카드");
     assert(await page.locator("#incList table").count() === 0, "휴대폰은 표 대신 카드");
-    step("휴대폰 폭(390px): 아래쪽 메뉴·전체 메뉴로 10개 화면, 가로 넘침 없음, 내역 카드");
+    step("휴대폰 폭(390px): 아래쪽 메뉴·전체 메뉴로 11개 화면과 분석 하위 탭 8개, 가로 넘침 없음, 내역 카드");
   } catch (e) {
     errors.push("테스트 중단: " + e.message);
     await shot(page, "zz_failure").catch(() => {});

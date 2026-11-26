@@ -26,6 +26,7 @@
   --series-income: #2a78d6;
   --series-income-ly: #86b6ef;   /* 전년 동기: 같은 파랑의 밝은 단계 */
   --series-expense: #eb6834;
+  --series-expense-ly: #f09d77;  /* 전년 동기 지출: 같은 주황의 밝은 단계 */
   --series-profit: #1baf7a;
   --grid-line: #e6eaf0;
   --baseline: #c6cedb;
@@ -73,6 +74,7 @@
     --series-income: #3987e5;
     --series-income-ly: #1c5cab;
     --series-expense: #d95926;
+    --series-expense-ly: #9c4420;
     --series-profit: #199e70;
     --grid-line: #242b34;
     --baseline: #38414d;
@@ -105,6 +107,7 @@
   --series-income: #3987e5;
   --series-income-ly: #1c5cab;
   --series-expense: #d95926;
+  --series-expense-ly: #9c4420;
   --series-profit: #199e70;
   --grid-line: #242b34;
   --baseline: #38414d;
@@ -765,7 +768,7 @@ table.data td label.check { font-weight: 600; color: var(--ink); }
 
 table.metrics-table td.metric-name { white-space: nowrap; }
 table.metrics-table .hint { font-size: var(--fs-micro); font-weight: 500; margin-left: 4px; }
-table.metrics-table tr.strong-row td { font-weight: 700; }
+table.metrics-table tr.strong-row td, table.metrics-table tr.base-row td { font-weight: 700; }
 table.metrics-table tr.sub-row td { color: var(--ink-2); }
 table.metrics-table tr.sub-row td.metric-name { padding-left: 26px; position: relative; }
 table.metrics-table tr.sub-row td.metric-name::before {
@@ -921,6 +924,86 @@ table.matrix th.sel { color: var(--accent-ink); }
 table.matrix td.heat.sel { box-shadow: inset 0 0 0 2px var(--accent); }
 table.matrix tr.sel td:first-child { color: var(--accent-ink); }
 
+/* ---------------- 분석 화면 (매출 분석 · 지출 분석) ---------------- */
+.hub-filters { display: flex; flex-direction: column; gap: 12px; }
+.hf-row { display: flex; flex-wrap: wrap; gap: 10px 14px; align-items: flex-end; }
+.hf-row .fg-item .input { width: auto; }
+.hf-row .fg-period { flex-wrap: nowrap; }
+.hf-row .hf-sel { flex: 0 1 210px; }
+.hf-row .hf-sel .input { width: 100%; }
+.fg-item .seg { align-self: flex-start; }
+.fg-btn { justify-content: flex-end; }
+.fg-btn .btn { align-self: flex-start; }
+.hub-bar {
+  display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between; gap: 8px 16px;
+  border-bottom: 1px solid var(--hairline-strong);
+}
+.hub-tabs { display: flex; gap: 2px; overflow-x: auto; scrollbar-width: none; max-width: 100%; }
+.hub-tabs::-webkit-scrollbar { display: none; }
+.hub-tabs button {
+  border: none; background: none; cursor: pointer; padding: 10px 14px; margin-bottom: -1px; white-space: nowrap;
+  font-weight: 700; font-size: var(--fs-base); color: var(--ink-2); border-bottom: 2px solid transparent;
+}
+.hub-tabs button:hover { color: var(--ink); }
+.hub-tabs button.on { color: var(--accent); border-bottom-color: var(--accent); }
+.hub-tools { padding-bottom: 8px; }
+.hub-panel { display: flex; flex-direction: column; gap: 18px; }
+.hub-panel > .form-hint { margin: 0; }
+.list-chips { margin: -4px 0 12px; }
+
+table.period-table th:first-child, table.period-table td:first-child {
+  position: sticky; left: 0; z-index: 2; background: var(--surface); box-shadow: 8px 0 8px -8px rgba(15, 20, 25, .16);
+}
+table.period-table thead th:first-child { z-index: 3; }
+table.period-table tr.total-row td:first-child { background: var(--surface-sunken); }
+table.period-table tr.cur-row td { background: var(--accent-soft); }
+table.period-table td .tag, table.period-table td .status { margin-left: 4px; font-size: var(--fs-micro); }
+table.period-table tr.pick-row { cursor: pointer; }
+table.period-table tr.pick-row:focus-visible td { outline: none; background: var(--accent-soft); }
+#rpTrendChart { margin-bottom: 14px; }
+table.price-table td.sub { color: var(--ink-2); font-size: var(--fs-sm); }
+table.matrix tr.total-row td:first-child { background: var(--surface-sunken); }
+
+/* 작은 추세 차트 묶음: 모양을 나란히 견준다(눈금은 칸마다 따로) */
+.mini-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 12px; }
+.mini-card {
+  display: flex; flex-direction: column; gap: 4px; min-width: 0; padding: 12px 14px;
+  border: 1px solid var(--hairline); border-radius: var(--radius-sm); background: var(--surface);
+}
+.mc-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.mc-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: var(--fs-base); }
+.mc-chg { flex: none; font-size: var(--fs-sm); }
+.mc-value { font-size: var(--fs-lg); font-weight: 750; font-variant-numeric: tabular-nums; letter-spacing: -.01em; }
+.mc-value small { margin-left: 8px; font-size: var(--fs-micro); font-weight: 600; color: var(--ink-3); letter-spacing: 0; }
+.mc-chart { min-height: 64px; }
+svg.mini { display: block; width: 100%; height: auto; overflow: visible; }
+.mini-empty { margin: 0; padding: 22px 0; text-align: center; font-size: var(--fs-sm); color: var(--ink-3); }
+.mc-foot { font-size: var(--fs-micro); color: var(--ink-3); font-variant-numeric: tabular-nums; }
+
+/* 마케팅 추천 */
+.rec-card .card-head { margin-bottom: 6px; }
+.rec-tip { margin: 0 0 10px; font-size: var(--fs-sm); color: var(--ink-2); line-height: 1.5; }
+.rec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.rec-item {
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 3px 10px;
+  padding: 9px 0; border-top: 1px solid var(--hairline);
+}
+.rec-top { grid-column: 1 / -1; display: flex; align-items: center; gap: 8px; min-width: 0; }
+.rec-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.rec-chg { margin-left: auto; flex: none; font-size: var(--fs-sm); }
+.rec-why { font-size: var(--fs-sm); color: var(--ink-2); font-variant-numeric: tabular-nums; line-height: 1.5; }
+.rec-item .link-btn { white-space: nowrap; padding: 2px 0 2px 6px; }
+.rec-none { margin: 0; padding: 14px 0 4px; border-top: 1px solid var(--hairline); font-size: var(--fs-sm); color: var(--ink-3); }
+.tip-list {
+  margin: 0; padding-left: 18px; display: flex; flex-direction: column; gap: 9px;
+  font-size: var(--fs-base); color: var(--ink-2); line-height: 1.55;
+}
+.tip-list b { color: var(--ink); }
+.rule-box summary { cursor: pointer; font-weight: 700; font-size: var(--fs-base); }
+.rule-box[open] summary { margin-bottom: 12px; }
+.rule-box .guide-list { margin-bottom: 10px; }
+.rule-box .form-hint { margin: 0; }
+
 /* ---------------- 휴대폰: 아래쪽 메뉴 · 전체 메뉴 · 내역 카드 · 폼 접기 ---------------- */
 .bottom-nav { display: none; }
 .form-toggle { display: none; }
@@ -1027,7 +1110,32 @@ table.matrix tr.sel td:first-child { color: var(--accent-ink); }
   /* 경영지표 표: 금액 칸은 빼고 증감·달성률만 */
   table.metrics-table .abs { display: none; }
   .only-narrow { display: inline; }
+  .only-wide { display: none; }
+  table.data.compact th, table.data.compact td { padding: 6px 6px; }
   .toolbar .tool-field { flex: 1 1 140px; }
   .toolbar .tool-field select { flex: 1; min-width: 0; }
+
+  /* 분석 화면: 조건은 한 줄에 하나(브랜드·차종은 둘씩), 탭은 옆으로 밀어 보고, 표의 덜 중요한 칸은 뺀다 */
+  .hf-row .fg-item { flex: 1 1 100%; }
+  .hf-row .fg-item .input { width: 100%; }
+  .hf-row .fg-period { flex-wrap: wrap; }
+  .hf-row .fg-period .date-range { display: flex; flex: 1 1 100%; flex-wrap: nowrap; min-width: 0; }
+  .hf-row .fg-period .date-range .input { flex: 1; min-width: 0; }
+  .hf-row .hf-sel { flex: 1 1 calc(50% - 7px); }
+  .hf-row .fg-btn { flex: 0 0 auto; }
+  .fg-item .seg { align-self: stretch; }
+  .fg-item .seg button { flex: 1; }
+  .hub-bar { gap: 8px; }
+  .hub-tabs { width: 100%; }
+  .hub-tabs button { padding: 12px 12px; }
+  .hub-tools { width: 100%; }
+  table.data .opt { display: none; }
+  .head-actions { width: 100%; }
+  .head-actions .btn { flex: 1 1 auto; }
+  .mini-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .mini-card { padding: 10px 10px; }
+  .mc-value { font-size: var(--fs-md); }
+  .mc-value small { display: block; margin: 0; }
 }
+@media (max-width: 430px) { .mini-grid { grid-template-columns: minmax(0, 1fr); } }
 

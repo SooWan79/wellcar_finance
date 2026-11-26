@@ -513,6 +513,241 @@
     return { mean: est, hw, lo: Math.max(mtd, est - hw), hi: est + hw, share: p, pace, mtd, day: d, days: D };
   }
 
+  // ---------------------------------------------------------------- 기간별·요일별 보기 (매출 분석·지출 분석·경영현황)
+  /** 표·툴팁용 기간 이름. start는 그 달력 기간의 첫날 */
+  function periodName(unit, start) {
+    const [y, m, d] = ymd(start);
+    if (unit === "day") return `${m}/${d} (${WEEKDAY_KO[weekdayIdx(start)]})`;
+    if (unit === "week") return `${isoWeek(start).week}주 (${md(start)}~${md(addDays(start, 6))})`;
+    if (unit === "month") return `${y}년 ${m}월`;
+    if (unit === "quarter") return `${y}년 ${Math.floor((m - 1) / 3) + 1}분기`;
+    return `${y}년`;
+  }
+  /** 차트 눈금용 짧은 이름 */
+  function periodTick(unit, start) {
+    const [y, m] = ymd(start);
+    if (unit === "day") return md(start);
+    if (unit === "week") return `${md(start)}~`;
+    if (unit === "month") return `${String(y).slice(2)}.${pad2(m)}`;
+    if (unit === "quarter") return `${String(y).slice(2)}.${Math.floor((m - 1) / 3) + 1}Q`;
+    return String(y);
+  }
+
+  /**
+   * [from, to]를 단위별 구간으로 나눈다. 구간은 범위 안으로 잘린다(첫·끝 구간은 일부일 수 있음).
+   * 반환 [{key, name, tick, from, to, start, end, full}] — start·end는 그 달력 기간 전체, full은 잘리지 않았는지
+   */
+  function periodsIn(unit, from, to) {
+    const out = [];
+    let cur = from, guard = 0;
+    while (cur <= to && guard++ < 5000) {
+      const p = periodOf(unit, cur);
+      const b = {
+        key: colKey(unit, p.start), name: periodName(unit, p.start), tick: periodTick(unit, p.start),
+        from: maxDate(p.start, from), to: minDate(p.end, to), start: p.start, end: p.end,
+      };
+      b.full = b.from === p.start && b.to === p.end;
+      out.push(b);
+      cur = addDays(p.end, 1);
+    }
+    return out;
+  }
+
+  /** 구간의 전년 동기 범위: 주는 52주(364일) 전 같은 요일, 온전한 구간은 1년 전 그 기간 전체, 잘린 구간은 1년 전 같은 날짜 */
+  function lyRangeOf(unit, b) {
+    if (unit === "week") return { from: addDays(b.from, -364), to: addDays(b.to, -364) };
+    if (b.full) { const p = lastYear(periodOf(unit, b.start)); return { from: p.start, to: p.end }; }
+    return { from: addYears(b.from, -1), to: addYears(b.to, -1) };
+  }
+
+  /** 구간의 전기 범위: 온전한 구간은 바로 앞 기간 전체, 잘린 구간(진행 중 등)은 앞 기간의 같은 위치(같은 일수) */
+  function prevRangeOf(unit, b) {
+    const p = periodOf(unit, b.start), q = shift(p, -1);
+    if (b.full) return { from: q.start, to: q.end };
+    const from = addDays(q.start, diffDays(p.start, b.from));
+    if (from > q.end) return null;
+    return { from, to: minDate(addDays(q.start, diffDays(p.start, b.to)), q.end) };
+  }
+
+  /**
+   * 날짜별 합계 색인. rows: 날짜(date)가 있는 집계 행, keys: 더할 측정값, pred: 행을 고르는 조건(없으면 전부),
+   * coverage: 자료를 받아 둔 범위 {from, to}.
+   * sum(range) → {키: 합계, days: 건수(cnt)가 있는 날 수}. 받아 두지 않은 날짜(coverage.from 이전)가 걸리면 null.
+   */
+  function dateIndex(rows, keys, pred, coverage) {
+    const dates = new Map();
+    for (const r of rows) {
+      if (pred && !pred(r)) continue;
+      let acc = dates.get(r.date);
+      if (!acc) { acc = {}; for (const k of keys) acc[k] = 0; dates.set(r.date, acc); }
+      for (const k of keys) acc[k] += Number(r[k]) || 0;
+    }
+    const sorted = [...dates.keys()].sort();
+    function sum(range) {
+      if (!range || (coverage && range.from < coverage.from)) return null;
+      const out = { days: 0 };
+      for (const k of keys) out[k] = 0;
+      for (const d of sorted) {
+        if (d < range.from) continue;
+        if (d > range.to) break;
+        const acc = dates.get(d);
+        for (const k of keys) out[k] += acc[k];
+        if (acc.cnt === undefined ? true : acc.cnt > 0) out.days++;
+      }
+      return out;
+    }
+    return { dates, sorted, sum, coverage: coverage || null };
+  }
+
+  /**
+   * 요일별 합계 (월~일). idx: dateIndex, range: {from, to}
+   * 반환 [{i, name, dates(범위 안 그 요일의 날짜 수), days(값이 있는 날 수), ...합계}] — 색인 범위 밖이면 null
+   */
+  function byWeekday(idx, range, keys) {
+    if (!range || (idx.coverage && range.from < idx.coverage.from)) return null;
+    const n = diffDays(range.from, range.to) + 1, startW = weekdayIdx(range.from);
+    const out = WEEKDAY_KO.map((name, i) => {
+      const o = { i, name, dates: Math.floor(n / 7) + (((i - startW + 7) % 7) < n % 7 ? 1 : 0), days: 0 };
+      for (const k of keys) o[k] = 0;
+      return o;
+    });
+    for (const d of idx.sorted) {
+      if (d < range.from) continue;
+      if (d > range.to) break;
+      const acc = idx.dates.get(d), o = out[weekdayIdx(d)];
+      for (const k of keys) o[k] += acc[k];
+      if (acc.cnt === undefined ? true : acc.cnt > 0) o.days++;
+    }
+    return out;
+  }
+
+  /**
+   * 요일별 수준: 하루 평균(값 ÷ 그 요일 날짜 수)을 영업하는 요일들의 평균과 견준다.
+   * level: closed(범위 안에 실적이 하루도 없음 — 휴무로 봄) / slow(평균의 80% 미만) / busy(120% 초과) / normal
+   */
+  function weekdayLevels(wd, valueFn) {
+    const per = wd.map(w => (w.dates ? valueFn(w) / w.dates : 0));
+    const open = wd.map((w, i) => (w.days > 0 ? per[i] : null)).filter(v => v !== null);
+    const base = open.length ? mean(open) : 0;
+    return wd.map((w, i) => {
+      const ratio = base > 0 ? per[i] / base : null;
+      const level = w.days === 0 ? "closed" : ratio === null ? "normal" : ratio < 0.8 ? "slow" : ratio > 1.2 ? "busy" : "normal";
+      return { i, name: w.name, perDate: per[i], ratio, level };
+    });
+  }
+
+  /** 이동 평균: 각 위치에서 자기까지 최근 n개의 평균 (n개가 안 되거나 빈 값이 끼면 null) */
+  function movingAvg(values, n) {
+    return values.map((_, i) => {
+      if (i < n - 1) return null;
+      let s = 0;
+      for (let j = i - n + 1; j <= i; j++) {
+        if (values[j] === null || values[j] === undefined) return null;
+        s += values[j];
+      }
+      return s / n;
+    });
+  }
+
+  /**
+   * 추세 요약. values: 온전한 구간의 값(오래된 순), k: 견줄 묶음 크기(최근 k개 평균 vs 그 앞 k개 평균).
+   * 반환 {n, k, recent, prior, changePct, slopePct(구간마다 평균의 몇 %씩 — 직선 기울기), dir: up|down|flat|null(자료 부족)}
+   */
+  function trendSummary(values, k) {
+    const vals = values.filter(v => v !== null && v !== undefined);
+    const n = vals.length;
+    k = Math.max(1, Math.min(k || 3, Math.floor(n / 2)));
+    if (n < 4) return { n, k, recent: null, prior: null, changePct: null, slopePct: null, dir: null };
+    const recent = mean(vals.slice(n - k)), prior = mean(vals.slice(n - 2 * k, n - k));
+    const fit = ols(vals.map((_, i) => i), vals), avg = mean(vals);
+    const changePct = pctChange(recent, prior);
+    const slopePct = avg ? fit.b / Math.abs(avg) * 100 : null;
+    const dir = changePct === null ? null : changePct >= 5 ? "up" : changePct <= -5 ? "down" : "flat";
+    return { n, k, recent, prior, changePct, slopePct, dir };
+  }
+
+  // ---------------------------------------------------------------- 분류별 실적·마케팅 추천
+  /**
+   * 분류별 실적 비교. cur·cmp: Map(키 → {sales, cnt, sq?}) — sq는 건별 실매출의 제곱합(있으면 변화가 우연인지 가려낸다).
+   * 반환 {total, cmpTotal: {sales, cnt, avg}, even(분류 수로 고르게 나눈 비중 %), segs: [...]} — 실매출 큰 순.
+   * seg: {key, sales, cnt, avg, share, cntShare, cmpSales, cmpCnt, cmpShare, growth, cntGrowth, sq, cmpSq}
+   */
+  function segmentStats(cur, cmp) {
+    cmp = cmp || new Map();
+    const tot = m => { let sales = 0, cnt = 0; for (const v of m.values()) { sales += v.sales; cnt += v.cnt; } return { sales, cnt, avg: cnt ? sales / cnt : null }; };
+    const total = tot(cur), cmpTotal = tot(cmp);
+    const hasSq = [...cur.values(), ...cmp.values()].some(v => v.sq !== undefined);
+    const keys = new Set([...cur.keys(), ...cmp.keys()]);
+    const segs = [...keys].map(key => {
+      const a = cur.get(key) || { sales: 0, cnt: 0 }, b = cmp.get(key) || { sales: 0, cnt: 0 };
+      return {
+        key, sales: a.sales, cnt: a.cnt, avg: a.cnt ? a.sales / a.cnt : null,
+        share: total.sales ? a.sales / total.sales * 100 : 0, cntShare: total.cnt ? a.cnt / total.cnt * 100 : 0,
+        cmpSales: b.sales, cmpCnt: b.cnt, cmpShare: cmpTotal.sales ? b.sales / cmpTotal.sales * 100 : 0,
+        growth: pctChange(a.sales, b.sales), cntGrowth: pctChange(a.cnt, b.cnt),
+        sq: hasSq ? a.sq || 0 : undefined, cmpSq: hasSq ? b.sq || 0 : undefined,
+      };
+    }).sort((x, y) => y.sales - x.sales || y.cmpSales - x.cmpSales);
+    const active = segs.filter(s => s.cnt > 0).length;
+    return { total, cmpTotal, even: active ? 100 / active : 0, segs };
+  }
+
+  /** 마케팅 추천 기준 (화면의 '추천 기준'에 그대로 보여 준다) */
+  const REC = { minCnt: 5, up: 10, down: -10, rising: 30, ticket: 1.15, minGain: 3, z: 2, dormantDays: 60, dormantMinCnt: 2 };
+
+  /**
+   * 분류별 실적에 추천 꼬리표를 붙인다(한 분류에 하나).
+   *   grow    키우기      — 비중이 평균 이상이고 비교 기간보다 10% 이상 늘어난 곳
+   *   recover 되살리기    — 비중이 평균 이상(지금 또는 비교 기간)인데 10% 이상 줄어든 곳
+   *   volume  건수 늘리기 — 객단가가 전체보다 15% 이상 높은데 건수 비중은 평균 미만인 곳
+   *   rising  떠오르는 곳 — 비중은 아직 작지만 30% 이상 늘었거나 새로 생긴 곳(건수 3건 이상 증가)
+   * 표본이 적으면(건수 5건 미만) 추천하지 않는다. impact는 같은 꼬리표 안의 정렬용(늘거나 준 금액 등).
+   *
+   * 건별 금액의 제곱합(sq)이 있으면 우연한 변동은 걸러 낸다. 한 건 금액이 들쭉날쭉한 장사에서는 큰 일 한두 건만 겹쳐도
+   * 실매출이 크게 달라지므로, 두 기간의 차이를 그 흩어짐(√(두 기간 제곱합))으로 나눈 값 z가 기준(2) 이상일 때만 변화로 본다.
+   * 건수 늘리기는 객단가 차이를 같은 방식(분류 안 건별 금액의 표준오차)으로 본다. z는 결과에 함께 넣는다(없으면 null).
+   */
+  function recommendSegments(stats, opts) {
+    const o = Object.assign({}, REC, opts || {});
+    const { total, even } = stats;
+    return stats.segs.map(s => {
+      const enough = s.cnt >= o.minCnt, hadEnough = s.cmpCnt >= o.minCnt;
+      const big = s.share >= even, wasBig = s.cmpShare >= even;
+      const known = s.sq !== undefined && s.cmpSq !== undefined;
+      const z = !known ? null : s.sq + s.cmpSq > 0 ? (s.sales - s.cmpSales) / Math.sqrt(s.sq + s.cmpSq) : 0;
+      const real = z === null || Math.abs(z) >= o.z;   // 변화가 우연이라 보기 어려운가
+      let ticketZ = null;
+      if (s.sq !== undefined && s.cnt > 1 && total.avg !== null) {
+        const se = Math.sqrt(Math.max(0, s.sq / s.cnt - s.avg * s.avg) / s.cnt);
+        ticketZ = se > 0 ? (s.avg - total.avg) / se : (s.avg > total.avg ? Infinity : 0);
+      }
+      let tag = null, impact = 0;
+      if (enough && hadEnough && big && s.growth !== null && s.growth >= o.up && real) {
+        tag = "grow"; impact = s.sales - s.cmpSales;
+      } else if (hadEnough && (big || wasBig) && s.growth !== null && s.growth <= o.down && real) {
+        tag = "recover"; impact = s.cmpSales - s.sales;
+      } else if (enough && total.avg && s.avg >= total.avg * o.ticket && s.cntShare < even && (ticketZ === null || ticketZ >= o.z)) {
+        tag = "volume"; impact = (s.avg - total.avg) * s.cnt;
+      } else if (enough && !big && s.cnt - s.cmpCnt >= o.minGain && real &&
+          (s.cmpSales === 0 || (s.growth !== null && s.growth >= o.rising))) {
+        tag = "rising"; impact = s.sales - s.cmpSales;
+      }
+      return Object.assign({}, s, { tag, impact, big, z });
+    });
+  }
+
+  /**
+   * 휴면 거래처: 거래가 있었는데(minCnt건 이상) 마지막 거래 뒤 days일 넘게 소식이 없는 곳. 실매출 큰 순.
+   * rows: [{key, sales, cnt, last}] (긴 기간의 거래처별 합계와 마지막 거래일)
+   */
+  function dormantClients(rows, today, opts) {
+    const o = Object.assign({}, REC, opts || {});
+    const skip = new Set(o.exclude || []);
+    return rows.filter(r => r.last && !skip.has(r.key) && r.cnt >= o.dormantMinCnt && diffDays(r.last, today) >= o.dormantDays)
+      .map(r => Object.assign({}, r, { idle: diffDays(r.last, today) }))
+      .sort((a, b) => b.sales - a.sales);
+  }
+
   const api = {
     UNITS, UNIT_LABEL, PREV_LABEL, WEEKDAY_KO,
     addDays, addMonths, addYears, diffDays, daysInMonth, weekdayIdx, isoWeek, md,
@@ -521,6 +756,8 @@
     targetFor, achievement, buckets,
     colKey, colLabel, colKeys, timeGroupFor, pivot, compareRange,
     addMonthKey, monthKeys, ols, forecastSeries, diffForecast, monthLanding,
+    periodName, periodTick, periodsIn, lyRangeOf, prevRangeOf, dateIndex, byWeekday, weekdayLevels,
+    movingAvg, trendSummary, segmentStats, recommendSegments, dormantClients, REC,
   };
   if (typeof module !== "undefined" && module.exports) module.exports = api;
   else root.WellcarMetrics = api;

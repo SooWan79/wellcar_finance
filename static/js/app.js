@@ -318,7 +318,7 @@
     b.addEventListener("click", () => b.closest("dialog").close()));
 
   // ---------------------------------------------------------------- tabs
-  const views = ["dashboard", "income", "expense", "balances", "report", "forecast", "mix", "analysis", "targets",
+  const views = ["dashboard", "income", "expense", "balances", "report", "forecast", "sales", "costs", "analysis", "targets",
     "data", "codes", "users"];
   const ADMIN_VIEWS = new Set(["codes", "users"]);
   const refreshers = {};
@@ -455,6 +455,16 @@
     const inc = codeValues("income_type"), exp = codeValues("expense_type");
     fillSelect($("incTypeFilter"), ["", ...inc], true, ["모든 매출유형", ...inc]);
     fillSelect($("expTypeFilter"), ["", ...exp], true, ["모든 지출유형", ...exp]);
+    const brands = codeValues("manufacturer");
+    fillSelect($("incBrandFilter"), ["", ...brands], true, ["모든 브랜드", ...brands]);
+    refreshListFilterOptions();
+  }
+  /** 내역 목록의 조건 선택 상자 중 유형을 따르는 것: 매출구분(수리 유형)은 고른 매출유형, 품목은 고른 지출유형 안에서 */
+  function refreshListFilterOptions() {
+    const cats = [...new Set(codeValues("income_category", $("incTypeFilter").value || undefined))];
+    fillSelect($("incCategoryFilter"), ["", ...cats], true, ["모든 구분·수리 유형", ...cats]);
+    const items = [...new Set(codeValues("expense_item", $("expTypeFilter").value || undefined))];
+    fillSelect($("expItemFilter"), ["", ...items], true, ["모든 품목", ...items]);
   }
 
   /** 차종 제안 목록: 고른 브랜드의 차종 (브랜드가 없거나 N/A면 전체) */
@@ -744,10 +754,20 @@
     };
   }
 
-  /** 매출·지출 목록 (기간·유형·검색·미수 필터 + 페이지) */
-  function makeEntryList(kind, prefix, table) {
+  // 내역 목록의 조건 이름 (분석 화면에서 넘어온 조건을 칩으로 보여 줄 때)
+  const DIM_LABEL = {
+    income_type: "매출유형", category: "수리 유형", manufacturer: "브랜드", car_model: "차종", product_model: "제품모델",
+    client: "거래처", payment_type: "결제유형", account: "계좌", currency: "통화", tax_invoice: "세금계산서",
+    expense_type: "지출유형", item: "품목",
+  };
+  /**
+   * 매출·지출 목록 (기간·유형·분류·검색·미수 필터 + 페이지).
+   * dimSelects: {분류: 선택 상자 id 뒷부분} — 선택 상자가 있는 분류. 그 밖의 조건(state.f)은 칩으로 보여 준다.
+   */
+  function makeEntryList(kind, prefix, table, dimSelects) {
     const el = id => $(prefix + id);
-    const state = { page: 1, size: 50 };
+    const state = { page: 1, size: 50, f: {} };
+    const typeDim = kind === "income" ? "income_type" : "expense_type";
     function params() {
       const p = new URLSearchParams();
       const set = (k, v) => { if (v) p.set(k, v); };
@@ -756,7 +776,38 @@
       set("type", el("TypeFilter").value);
       set("q", el("Search").value.trim());
       if (el("Outstanding").checked) p.set("outstanding", "1");
+      for (const [dim, id] of Object.entries(dimSelects)) set("f." + dim, el(id).value);
+      for (const [dim, v] of Object.entries(state.f)) p.set("f." + dim, v);
       return p;
+    }
+    function renderChips() {
+      const keys = Object.keys(state.f);
+      el("Chips").hidden = !keys.length;
+      el("Chips").innerHTML = keys.map(k =>
+        `<button type="button" class="chip" data-clear="${esc(k)}">${esc(DIM_LABEL[k] || k)}: ${esc(state.f[k] === "" ? "(미지정)" : state.f[k])} ` +
+        `<span aria-hidden="true">✕</span><span class="sr-only">조건 지우기</span></button>`).join("");
+    }
+    /** 분석 화면에서 넘어올 때: 기간과 조건({분류: 값}, 빈 문자열은 미지정)을 정해 둔다. 목록은 화면이 열릴 때 다시 읽는다 */
+    function open(opts) {
+      opts = opts || {};
+      el("Period").value = opts.from || opts.to ? "custom" : "all";
+      el("From").value = opts.from || "";
+      el("To").value = opts.to || "";
+      el("Search").value = "";
+      el("Outstanding").checked = false;
+      el("TypeFilter").value = "";
+      const f = opts.f || {};
+      if (f[typeDim]) setSelectValue(el("TypeFilter"), f[typeDim]);
+      refreshListFilterOptions();
+      for (const id of Object.values(dimSelects)) el(id).value = "";
+      state.f = {};
+      for (const [dim, v] of Object.entries(f)) {
+        if (dim === typeDim && v) continue;
+        if (dimSelects[dim] && v) setSelectValue(el(dimSelects[dim]), v);
+        else state.f[dim] = v;
+      }
+      renderChips();
+      state.page = 1;
     }
     let seq = 0;
     async function load(resetPage) {
@@ -775,7 +826,15 @@
       } catch (err) { toast(err.message, true); }
     }
     bindPeriod(el("Period"), el("From"), el("To"), "all", () => load(true));
-    el("TypeFilter").addEventListener("change", () => load(true));
+    el("TypeFilter").addEventListener("change", () => { refreshListFilterOptions(); load(true); });
+    for (const id of Object.values(dimSelects)) el(id).addEventListener("change", () => load(true));
+    el("Chips").addEventListener("click", e => {
+      const b = e.target.closest("[data-clear]");
+      if (!b) return;
+      delete state.f[b.dataset.clear];
+      renderChips();
+      load(true);
+    });
     el("Outstanding").addEventListener("change", () => load(true));
     el("Search").addEventListener("input", debounce(() => load(true), 300));
     el("Export").addEventListener("click", async () => {
@@ -784,11 +843,11 @@
       try { toast(`${await download(`/api/export.xlsx?${p}`)} 파일을 받았습니다.`); }
       catch (err) { toast(err.message, true); }
     });
-    return { load };
+    return { load, open };
   }
   const lists = {
-    income: makeEntryList("income", "inc", "incomes"),
-    expense: makeEntryList("expense", "exp", "expenses"),
+    income: makeEntryList("income", "inc", "incomes", { manufacturer: "BrandFilter", category: "CategoryFilter" }),
+    expense: makeEntryList("expense", "exp", "expenses", { item: "ItemFilter" }),
   };
   refreshers.income = () => lists.income.load();
   refreshers.expense = () => lists.expense.load();
@@ -1770,17 +1829,31 @@
     reports.fillTargetYears(META.years || []);
   }
 
-  // 경영현황 · 매출·비용 분석 · 목표·실적 화면 (reports.js)
+  // 경영현황 · 맞춤 집계 · 목표·실적 화면 (reports.js)
   const reports = window.WellcarReports({
     $, api, put, esc, fmt, fmtWon, toast, getCss, can, refreshers, nextReq, isStale,
     metric, metricStrip, saveBlob, todayStr, loadTargets, invalidateTargets, agg, fillSelect,
   });
 
-  // 추세·예측 · 브랜드·차종·수리 유형 화면 (insights.js)
-  window.WellcarInsights({
-    $, api, esc, fmt, fmtWon, toast, getCss, refreshers, nextReq, isStale,
-    metric, metricStrip, saveBlob, todayStr, loadTargets,
+  // 분석 화면이 함께 쓰는 도우미 (hubkit.js)
+  const kit = window.WellcarHubKit({ $, api, esc, fmt, fmtWon, todayStr, toast });
+
+  // 추세·예측 화면 (insights.js)
+  const insights = window.WellcarInsights({
+    $, api, esc, fmtWon, toast, getCss, refreshers, nextReq, isStale, todayStr, loadTargets,
   });
+
+  // 매출 분석 · 지출 분석 화면 (sales.js, costs.js)
+  const hubCtx = {
+    $, api, esc, fmt, fmtWon, toast, getCss, refreshers, nextReq, isStale,
+    metric, metricStrip, saveBlob, todayStr, kit,
+    /** 조건을 넘겨 매출·지출 내역 목록을 연다 */
+    openEntries(kind, opts) { lists[kind].open(opts); showView(kind); },
+    /** 조건을 넘겨 추세·예측 화면을 연다 */
+    openForecast(table, filters, label) { insights.setScope(table, filters, label); showView("forecast"); },
+  };
+  window.WellcarSales(hubCtx);
+  window.WellcarCosts(hubCtx);
 
   async function init() {
     await loadMeta();

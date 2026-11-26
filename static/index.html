@@ -90,8 +90,9 @@
     <button data-view="balances" class="tab">미수·미지급</button>
     <button data-view="report" class="tab">경영현황</button>
     <button data-view="forecast" class="tab">추세·예측</button>
-    <button data-view="mix" class="tab">브랜드·차종·수리</button>
-    <button data-view="analysis" class="tab">매출·비용 분석</button>
+    <button data-view="sales" class="tab">매출 분석</button>
+    <button data-view="costs" class="tab">지출 분석</button>
+    <button data-view="analysis" class="tab">맞춤 집계</button>
     <button data-view="targets" class="tab">목표·실적</button>
     <button data-view="data" class="tab">데이터 관리</button>
     <button data-view="codes" class="tab need-admin">코드관리</button>
@@ -233,9 +234,12 @@
             <input type="date" class="input" id="incTo" aria-label="종료일">
           </span>
           <select class="input" id="incTypeFilter" aria-label="매출유형"></select>
+          <select class="input" id="incBrandFilter" aria-label="브랜드"></select>
+          <select class="input" id="incCategoryFilter" aria-label="매출구분(수리 유형)"></select>
           <input type="search" class="input grow" id="incSearch" placeholder="거래처·차종·적요·금액 검색">
           <label class="check"><input type="checkbox" id="incOutstanding"> 미수금 남은 건만</label>
         </div>
+        <div class="filter-chips list-chips" id="incChips" hidden></div>
         <div class="table-wrap tall" id="incList"></div>
         <div class="pager" id="incPager"></div>
       </div>
@@ -312,9 +316,11 @@
             <input type="date" class="input" id="expTo" aria-label="종료일">
           </span>
           <select class="input" id="expTypeFilter" aria-label="지출유형"></select>
+          <select class="input" id="expItemFilter" aria-label="거래품목"></select>
           <input type="search" class="input grow" id="expSearch" placeholder="거래처·적요·품목·금액 검색">
           <label class="check"><input type="checkbox" id="expOutstanding"> 미지급금 남은 건만</label>
         </div>
+        <div class="filter-chips list-chips" id="expChips" hidden></div>
         <div class="table-wrap tall" id="expList"></div>
         <div class="pager" id="expPager"></div>
       </div>
@@ -393,6 +399,11 @@
         <span class="card-meta" id="rpTableMeta"></span>
       </div>
       <div class="table-wrap" id="rpTable"></div>
+    </div>
+    <div class="card">
+      <div class="card-head"><h3 id="rpTrendTitle">기간별 손익 추이</h3><span class="card-meta" id="rpTrendMeta"></span></div>
+      <div id="rpTrendChart" class="chart-box"></div>
+      <div class="table-wrap" id="rpTrend"></div>
     </div>
     <div class="grid-2">
       <div class="card">
@@ -473,61 +484,330 @@
       이번 달 마감 예상은 <b>오늘까지 실적 + 남은 날의 평소 몫</b>입니다.</p>
   </section>
 
-  <!-- ================= 브랜드·차종·수리 유형 ================= -->
-  <section id="view-mix" class="view" hidden>
+  <!-- ================= 매출 분석 ================= -->
+  <section id="view-sales" class="view" hidden>
     <div class="view-head">
       <div class="view-title">
-        <h2>브랜드·차종·수리 유형 분석</h2>
-        <p class="view-sub">차 브랜드·차종·수리 유형(매출구분)별 실매출·건수·객단가와 증감을 한눈에 봅니다. 항목을 누르면 그 항목으로 좁혀 봅니다.</p>
+        <h2>매출 분석</h2>
+        <p class="view-sub">기간별·요일별 흐름, 브랜드·차종·수리 유형, 서비스 가격 변화, 집중할 마케팅 대상을 한곳에서 봅니다.</p>
       </div>
-      <button class="btn" id="mxExport">엑셀로 받기</button>
-    </div>
-    <div class="toolbar">
-      <select id="mxPeriod" class="input" aria-label="기간"></select>
-      <div class="seg" id="mxScope" role="group" aria-label="매출 범위">
-        <button type="button" data-scope="" class="on" aria-pressed="true">전체 매출</button>
-        <button type="button" data-scope="서비스제공">수리·서비스</button>
-        <button type="button" data-scope="상품판매">상품판매</button>
-      </div>
-      <div class="seg" id="mxMeasure" role="group" aria-label="값">
-        <button type="button" data-measure="sales" class="on" aria-pressed="true">실매출</button>
-        <button type="button" data-measure="cnt">건수</button>
-        <button type="button" data-measure="avg">객단가</button>
-      </div>
-      <label class="tool-field"><span>비교</span>
-        <select id="mxCompare" class="input" aria-label="비교">
-          <option value="ly">전년 동기</option>
-          <option value="prev">전기</option>
-        </select></label>
-    </div>
-    <div class="filter-chips" id="mxChips" hidden></div>
-    <div id="mxSummary"></div>
-    <div class="grid-3">
-      <div class="card">
-        <div class="card-head"><h3>브랜드별</h3><span class="card-meta" id="mxBrandMeta"></span></div>
-        <div id="mxBrand" class="rank-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h3>차종별</h3><span class="card-meta" id="mxModelMeta"></span></div>
-        <div id="mxModel" class="rank-list"></div>
-      </div>
-      <div class="card">
-        <div class="card-head"><h3>수리 유형별 <small class="muted">(매출구분)</small></h3><span class="card-meta" id="mxCatMeta"></span></div>
-        <div id="mxCategory" class="rank-list"></div>
+      <div class="head-actions">
+        <button class="btn" id="saOpenList">내역 보기</button>
+        <button class="btn" id="saOpenForecast">추세·예측</button>
+        <button class="btn" id="saExport">엑셀로 받기</button>
       </div>
     </div>
-    <div class="card">
-      <div class="card-head"><h3>브랜드 × 수리 유형</h3><span class="card-meta" id="mxMatrixMeta">칸이 진할수록 많음</span></div>
-      <div class="table-wrap" id="mxMatrix"></div>
+    <div class="card filter-card hub-filters">
+      <div class="hf-row">
+        <div class="fg-item">
+          <span class="fg-label">기간</span>
+          <div class="fg-period">
+            <select id="saPeriod" class="input" aria-label="기간"></select>
+            <span class="date-range">
+              <input type="date" class="input" id="saFrom" aria-label="시작일">
+              <span class="range-sep">~</span>
+              <input type="date" class="input" id="saTo" aria-label="종료일">
+            </span>
+          </div>
+        </div>
+        <label class="fg-item"><span class="fg-label">비교</span>
+          <select id="saCompare" class="input">
+            <option value="ly">전년 동기</option>
+            <option value="prev">전기 (바로 앞 기간)</option>
+          </select>
+        </label>
+        <div class="fg-item">
+          <span class="fg-label">매출 범위</span>
+          <div class="seg" id="saScope" role="group" aria-label="매출 범위">
+            <button type="button" data-scope="" class="on" aria-pressed="true">전체 매출</button>
+            <button type="button" data-scope="서비스제공">수리·서비스</button>
+            <button type="button" data-scope="상품판매">상품판매</button>
+          </div>
+        </div>
+      </div>
+      <div class="hf-row">
+        <label class="fg-item hf-sel"><span class="fg-label">브랜드</span><select id="saFBrand" class="input"></select></label>
+        <label class="fg-item hf-sel"><span class="fg-label">차종</span><select id="saFModel" class="input"></select></label>
+        <label class="fg-item hf-sel"><span class="fg-label">수리 유형 (매출구분)</span><select id="saFCategory" class="input"></select></label>
+        <div class="fg-item fg-btn"><button type="button" class="btn ghost" id="saClear" hidden>조건 지우기</button></div>
+      </div>
+    </div>
+    <div id="saSummary"></div>
+    <div class="hub-bar">
+      <div class="hub-tabs" id="saTabs" role="tablist" aria-label="매출 분석 보기">
+        <button type="button" role="tab" data-tab="period" class="on" aria-selected="true">기간별</button>
+        <button type="button" role="tab" data-tab="weekday">요일별</button>
+        <button type="button" role="tab" data-tab="mix">브랜드·차종·수리</button>
+        <button type="button" role="tab" data-tab="price">서비스 가격</button>
+        <button type="button" role="tab" data-tab="marketing">마케팅 추천</button>
+      </div>
+      <div class="toolbar hub-tools" id="saTools">
+        <div class="seg" id="saMeasure" role="group" aria-label="값">
+          <button type="button" data-measure="sales" class="on" aria-pressed="true">실매출</button>
+          <button type="button" data-measure="cnt">건수</button>
+          <button type="button" data-measure="avg">객단가</button>
+        </div>
+        <div class="seg" id="saUnit" role="group" aria-label="기간 단위">
+          <button type="button" data-unit="day">일별</button>
+          <button type="button" data-unit="week">주별</button>
+          <button type="button" data-unit="month">월별</button>
+          <button type="button" data-unit="quarter">분기별</button>
+          <button type="button" data-unit="year">연도별</button>
+        </div>
+        <div class="toolbar" id="saPriceTools" hidden>
+          <div class="seg" id="saPriceUnit" role="group" aria-label="가격 추이 단위">
+            <button type="button" data-unit="month">월별</button>
+            <button type="button" data-unit="quarter">분기별</button>
+            <button type="button" data-unit="year">연도별</button>
+          </div>
+          <label class="tool-field"><span>나누어 보기</span>
+            <select id="saPriceDim" class="input" aria-label="나누어 보기">
+              <option value="category">수리 유형</option>
+              <option value="manufacturer">브랜드</option>
+              <option value="car_model">차종</option>
+            </select></label>
+        </div>
+      </div>
+    </div>
+
+    <!-- 기간별 -->
+    <div id="saTab-period" class="hub-panel" role="tabpanel">
+      <div class="card">
+        <div class="card-head"><h3 id="saPeriodTitle">기간별 실매출</h3><span class="card-meta" id="saPeriodMeta"></span></div>
+        <div id="saPeriodChart" class="chart-box"></div>
+        <p class="chart-note" id="saPeriodNote"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>기간별 표</h3><span class="card-meta" id="saPeriodTableMeta"></span></div>
+        <div class="table-wrap tall" id="saPeriodTable"></div>
+      </div>
+    </div>
+
+    <!-- 요일별 -->
+    <div id="saTab-weekday" class="hub-panel" role="tabpanel" hidden>
+      <div class="card">
+        <div class="card-head"><h3 id="saWdTitle">요일별 하루 평균 실매출</h3><span class="card-meta">하루 평균 = 합계 ÷ 기간 안의 그 요일 날 수</span></div>
+        <div id="saWdChart" class="chart-box"></div>
+        <p class="chart-note" id="saWdNote"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>요일별 표</h3><span class="card-meta">바쁨·한가함은 영업하는 요일 평균의 120% 초과·80% 미만</span></div>
+        <div class="table-wrap" id="saWdTable"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>수리 유형 × 요일</h3><span class="card-meta" id="saWdMatrixMeta"></span></div>
+        <div class="table-wrap" id="saWdMatrix"></div>
+      </div>
+    </div>
+
+    <!-- 브랜드·차종·수리 유형 -->
+    <div id="saTab-mix" class="hub-panel" role="tabpanel" hidden>
+      <p class="form-hint">항목을 누르면 그 항목으로 좁혀 봅니다(다시 누르면 풀림). 좁힌 조건은 위 선택 상자에 보이고 다른 탭에도 그대로 적용됩니다.</p>
+      <div class="grid-3" id="saMixLists">
+        <div class="card">
+          <div class="card-head"><h3>브랜드별</h3><span class="card-meta" id="saListBrandMeta"></span></div>
+          <div id="saListBrand" class="rank-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>차종별</h3><span class="card-meta" id="saListModelMeta"></span></div>
+          <div id="saListModel" class="rank-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>수리 유형별 <small class="muted">(매출구분)</small></h3><span class="card-meta" id="saListCategoryMeta"></span></div>
+          <div id="saListCategory" class="rank-list"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>브랜드 × 수리 유형</h3><span class="card-meta" id="saMatrixMeta">칸이 진할수록 많음</span></div>
+        <div class="table-wrap" id="saMatrix"></div>
+      </div>
+    </div>
+
+    <!-- 서비스 가격 -->
+    <div id="saTab-price" class="hub-panel" role="tabpanel" hidden>
+      <div id="saPriceSummary"></div>
+      <div class="card">
+        <div class="card-head"><h3 id="saPriceGridTitle">수리 유형별 건당 평균 금액 추이</h3><span class="card-meta" id="saPriceGridMeta"></span></div>
+        <div id="saPriceGrid" class="mini-grid"></div>
+        <p class="chart-note" id="saPriceNote"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>가격표</h3><span class="card-meta" id="saPriceTableMeta"></span></div>
+        <div class="table-wrap" id="saPriceTable"></div>
+      </div>
+    </div>
+
+    <!-- 마케팅 추천 -->
+    <div id="saTab-marketing" class="hub-panel" role="tabpanel" hidden>
+      <p class="form-hint" id="saRecHint"></p>
+      <div class="grid-2" id="saRecCards"></div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3>거래가 끊긴 거래처</h3><span class="card-meta" id="saDormantMeta"></span></div>
+          <div class="table-wrap" id="saDormant"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>언제 하면 좋을까</h3><span class="card-meta">요일은 고른 기간, 계절성은 최근 36개월 기준</span></div>
+          <div id="saTiming"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head">
+          <h3>성장–비중 지도</h3>
+          <div class="seg" id="saMapDim" role="group" aria-label="지도에 그릴 분류">
+            <button type="button" data-dim="manufacturer" class="on" aria-pressed="true">브랜드</button>
+            <button type="button" data-dim="car_model">차종</button>
+            <button type="button" data-dim="category">수리 유형</button>
+            <button type="button" data-dim="client">거래처</button>
+          </div>
+        </div>
+        <div id="saMap" class="chart-box"></div>
+        <p class="chart-note" id="saMapNote"></p>
+      </div>
+      <details class="card rule-box">
+        <summary>추천 기준 보기</summary>
+        <ul class="guide-list" id="saRecRule"></ul>
+        <p class="form-hint">추천은 지난 실적의 숫자만 보고 고른 참고 자료입니다. 재고·인력·경쟁 상황은 알지 못하니 실제 판단에 함께 견줘 보세요.</p>
+      </details>
     </div>
   </section>
 
-  <!-- ================= 매출·비용 분석 ================= -->
+  <!-- ================= 지출 분석 ================= -->
+  <section id="view-costs" class="view" hidden>
+    <div class="view-head">
+      <div class="view-title">
+        <h2>지출 분석</h2>
+        <p class="view-sub">비용이 어떻게 늘고 줄었는지, 어디에 썼는지, 원가와 매출총이익은 어떤지 봅니다.</p>
+      </div>
+      <div class="head-actions">
+        <button class="btn" id="coOpenList">내역 보기</button>
+        <button class="btn" id="coOpenForecast">추세·예측</button>
+        <button class="btn" id="coExport">엑셀로 받기</button>
+      </div>
+    </div>
+    <div class="card filter-card hub-filters">
+      <div class="hf-row">
+        <div class="fg-item">
+          <span class="fg-label">기간</span>
+          <div class="fg-period">
+            <select id="coPeriod" class="input" aria-label="기간"></select>
+            <span class="date-range">
+              <input type="date" class="input" id="coFrom" aria-label="시작일">
+              <span class="range-sep">~</span>
+              <input type="date" class="input" id="coTo" aria-label="종료일">
+            </span>
+          </div>
+        </div>
+        <label class="fg-item"><span class="fg-label">비교</span>
+          <select id="coCompare" class="input">
+            <option value="ly">전년 동기</option>
+            <option value="prev">전기 (바로 앞 기간)</option>
+          </select>
+        </label>
+      </div>
+      <div class="hf-row">
+        <label class="fg-item hf-sel"><span class="fg-label">지출유형</span><select id="coFType" class="input"></select></label>
+        <label class="fg-item hf-sel"><span class="fg-label">품목</span><select id="coFItem" class="input"></select></label>
+        <label class="fg-item hf-sel"><span class="fg-label">거래처</span><select id="coFClient" class="input"></select></label>
+        <div class="fg-item fg-btn"><button type="button" class="btn ghost" id="coClear" hidden>조건 지우기</button></div>
+      </div>
+    </div>
+    <div id="coSummary"></div>
+    <div class="hub-bar">
+      <div class="hub-tabs" id="coTabs" role="tablist" aria-label="지출 분석 보기">
+        <button type="button" role="tab" data-tab="period" class="on" aria-selected="true">기간별 추세</button>
+        <button type="button" role="tab" data-tab="type">유형별</button>
+        <button type="button" role="tab" data-tab="cogs">원가 분석</button>
+      </div>
+      <div class="toolbar hub-tools" id="coTools">
+        <div class="seg" id="coUnit" role="group" aria-label="기간 단위">
+          <button type="button" data-unit="day">일별</button>
+          <button type="button" data-unit="week">주별</button>
+          <button type="button" data-unit="month">월별</button>
+          <button type="button" data-unit="quarter">분기별</button>
+          <button type="button" data-unit="year">연도별</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- 기간별 추세 -->
+    <div id="coTab-period" class="hub-panel" role="tabpanel">
+      <div class="card">
+        <div class="card-head"><h3 id="coPeriodTitle">기간별 지출</h3><span class="card-meta" id="coPeriodMeta"></span></div>
+        <div id="coPeriodChart" class="chart-box"></div>
+        <p class="chart-note" id="coPeriodNote"></p>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3 id="coSplitTitle">지출유형별 추세</h3><span class="card-meta" id="coSplitMeta"></span></div>
+        <div id="coSplit" class="mini-grid"></div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3>기간별 표</h3><span class="card-meta">진행 중인 구간은 같은 날짜 수까지 비교 · 실매출 대비 = 지출 ÷ 실매출</span></div>
+        <div class="table-wrap tall" id="coPeriodTable"></div>
+      </div>
+    </div>
+
+    <!-- 유형별 -->
+    <div id="coTab-type" class="hub-panel" role="tabpanel" hidden>
+      <p class="form-hint">항목을 누르면 그 항목으로 좁혀 봅니다(다시 누르면 풀림). 증감은 늘면 빨강, 줄면 초록으로 표시합니다.</p>
+      <div class="grid-3" id="coTypeLists">
+        <div class="card">
+          <div class="card-head"><h3>지출유형별</h3><span class="card-meta" id="coListTypeMeta"></span></div>
+          <div id="coListType" class="rank-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>품목별</h3><span class="card-meta" id="coListItemMeta"></span></div>
+          <div id="coListItem" class="rank-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>거래처별</h3><span class="card-meta" id="coListClientMeta"></span></div>
+          <div id="coListClient" class="rank-list"></div>
+        </div>
+      </div>
+      <div class="card">
+        <div class="card-head"><h3 id="coMonthlyTitle">지출유형 × 월</h3><span class="card-meta" id="coMonthlyMeta"></span></div>
+        <div class="table-wrap" id="coMonthly"></div>
+      </div>
+    </div>
+
+    <!-- 원가 분석 -->
+    <div id="coTab-cogs" class="hub-panel" role="tabpanel" hidden>
+      <p class="form-hint" id="coCogsHint" hidden>원가 분석은 위의 지출유형·품목·거래처 조건과 상관없이 <b>전체 지출</b>로 계산합니다.</p>
+      <div id="coCogsKpi"></div>
+      <div class="card">
+        <div class="card-head"><h3>손익 구조</h3><span class="card-meta">원가 = 지출유형 ‘제품원가’ · 실매출 = 매출액 − 거래처 지급액</span></div>
+        <div class="table-wrap" id="coPnl"></div>
+      </div>
+      <div class="grid-2">
+        <div class="card">
+          <div class="card-head"><h3 id="coCogsChartTitle">실매출·원가·매출총이익</h3><span class="card-meta">단위: 원</span></div>
+          <div id="coCogsChart" class="chart-box"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3 id="coRateTitle">원가율</h3><span class="card-meta">원가 ÷ 실매출</span></div>
+          <div id="coRateChart" class="chart-box"></div>
+        </div>
+      </div>
+      <p class="form-hint">원가는 매입한 날 기준으로 잡힙니다. 재고로 미리 사 둔 달은 원가율이 높게, 그 재고를 판 달은 낮게 보일 수 있으니 분기·연 단위로 함께 보세요.</p>
+      <div class="grid-2" id="coCostLists">
+        <div class="card">
+          <div class="card-head"><h3>원가 품목별</h3><span class="card-meta">누르면 내역 보기</span></div>
+          <div id="coCostItems" class="rank-list"></div>
+        </div>
+        <div class="card">
+          <div class="card-head"><h3>원가 매입처별</h3><span class="card-meta">누르면 내역 보기</span></div>
+          <div id="coCostVendors" class="rank-list"></div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ================= 맞춤 집계 ================= -->
   <section id="view-analysis" class="view" hidden>
     <div class="view-head">
       <div class="view-title">
-        <h2>매출·비용 분석</h2>
-        <p class="view-sub">브랜드·차종·서비스 구분·거래처 등 원하는 기준으로 매출과 비용을 집계합니다.</p>
+        <h2>맞춤 집계</h2>
+        <p class="view-sub">브랜드·차종·서비스 구분·거래처 등 원하는 기준과 기간 단위를 골라 매출·비용 집계표를 직접 만듭니다.</p>
       </div>
       <button class="btn" id="anExport">엑셀로 받기</button>
     </div>
@@ -753,8 +1033,9 @@
     <div class="sheet-grid">
       <button type="button" data-view="balances">미수·미지급</button>
       <button type="button" data-view="forecast">추세·예측</button>
-      <button type="button" data-view="mix">브랜드·차종·수리</button>
-      <button type="button" data-view="analysis">매출·비용 분석</button>
+      <button type="button" data-view="sales">매출 분석</button>
+      <button type="button" data-view="costs">지출 분석</button>
+      <button type="button" data-view="analysis">맞춤 집계</button>
       <button type="button" data-view="targets">목표·실적</button>
       <button type="button" data-view="data">데이터 관리</button>
       <button type="button" data-view="codes" class="need-admin">코드관리</button>
@@ -829,7 +1110,10 @@
 <script src="js/metrics.js"></script>
 <script src="js/charts.js"></script>
 <script src="js/reports.js"></script>
+<script src="js/hubkit.js"></script>
 <script src="js/insights.js"></script>
+<script src="js/sales.js"></script>
+<script src="js/costs.js"></script>
 <script src="js/app.js"></script>
 </body>
 </html>

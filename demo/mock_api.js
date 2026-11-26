@@ -53,14 +53,6 @@
   const yearOk = y => Number.isInteger(y) && y >= 1900 && y <= 2999;
   const dayNum = s => Date.UTC(+s.slice(0, 4), +s.slice(5, 7) - 1, +s.slice(8, 10)) / 86400000;
 
-  function mulberry32(a) {
-    return function () {
-      a |= 0; a = (a + 0x6D2B79F5) | 0;
-      let t = Math.imul(a ^ (a >>> 15), 1 | a);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-  }
 
   async function hashPassword(pw) {
     try {
@@ -117,99 +109,15 @@
     created_by: "", updated_by: "", updated_at: "" };
   const DEFAULTS = { incomes: INCOME_DEFAULTS, expenses: EXPENSE_DEFAULTS };
 
-  /** seed_demo.py와 같은 모양의 샘플: 작년 1월 1일부터 오늘까지, 올해 월별 목표 */
+  /** 샘플 내역: 작년 1월 1일부터 오늘까지와 올해 월별 목표. seed_data.js가 seed_demo.py와 똑같은 내역을 만든다 */
   function seedEntries(db) {
-    const rng = mulberry32(42);
-    const pick = arr => arr[Math.floor(rng() * arr.length)];
-    const wpick = (arr, w) => {
-      let x = rng() * w.reduce((a, b) => a + b, 0);
-      for (let i = 0; i < arr.length; i++) { x -= w[i]; if (x < 0) return arr[i]; }
-      return arr[arr.length - 1];
-    };
-    const SERVICES = ["카오디오수리", "데크수리", "내비게이션수리", "앰프수리", "메카니즘수리", "탈부착"];
-    const PRODUCTS = ["카오디오", "앰프", "스피커", "내비게이션", "블랙박스"];
-    const MAKERS = ["벤츠", "BMW", "아우디", "폭스바겐", "볼보", "토요타", "현대", "레인지로버"];
-    const MAKER_W = [26, 22, 12, 8, 6, 5, 14, 7];
-    const UNITS = ["CIC", "NBT", "COMAND", "MMI", "IMC", "Harman", "Burmester"];
-    const DEALERS = ["동서카오디오(대구)", "재즈카오디오(광주)", "현대카오디오(서울)", "수원테크(수원)",
-      "닥터카오디오(수원)", "써브카오디오(안산)"];
-    const CLIENTS = ["개인", "방문", "개인", "방문", "개인", "방문", ...DEALERS, "옥션", "G마켓"];
-    const EXP_ITEMS = [["제품원가", "제품매입"], ["제품원가", "서비스이용"], ["비용", "식대"], ["비용", "차량유지비"],
-      ["비용", "통신비"], ["비용", "수도광열비"], ["비용", "광고비"], ["생활", "마트"], ["생활", "식당"]];
-    const SEASON = [0.85, 0.8, 0.95, 1.0, 1.05, 1.0, 1.1, 1.05, 0.95, 1.0, 1.05, 1.15];
-    const today = new Date(); today.setHours(0, 0, 0, 0);
-    const startYear = today.getFullYear() - 1;
-    for (let d = new Date(startYear, 0, 1); d <= today; d.setDate(d.getDate() + 1)) {
-      const off = Math.round((today - d) / 86400000);
-      const growth = 1 + 0.08 * (d.getFullYear() - startYear);
-      const day = isoOf(d);
-      const created = day + " 18:00:00";
-      if (d.getDay() !== 0 && rng() < 0.88) {
-        for (let i = 1 + Math.floor(rng() * 3); i > 0; i--) {
-          const isService = rng() < 0.7;
-          const amount = Math.floor((5 + Math.floor(rng() * 105)) * 10000 * SEASON[d.getMonth()] * growth / 10000) * 10000;
-          const pay = wpick(["현금", "카드", "계좌입금"], [3, 4, 3]);
-          const tax = pay === "카드" || rng() < 0.3 ? "Y" : "N";
-          const vat = (pay === "카드" || tax === "Y") ? roundHalfUp(amount * 10 / 110) : 0;
-          const client = pick(CLIENTS);
-          const maker = wpick(MAKERS, MAKER_W);
-          // 업체 거래 일부는 외상(미수금): 최근일수록 아직 못 받은 경우가 많게
-          let receivable = 0;
-          if (pay === "계좌입금" && DEALERS.includes(client) && rng() < (off < 45 ? 0.6 : 0.04))
-            receivable = rng() < 0.7 ? amount : Math.floor(amount / 2);
-          // 업체 소개·협업 작업은 일부를 거래처에 지급(미지급금, 매출에서 차감)
-          let payout = 0, payoutDue = 0;
-          if (DEALERS.includes(client) && rng() < 0.25) {
-            payout = Math.floor(amount * pick([0.2, 0.3, 0.4]) / 10000) * 10000;
-            payoutDue = off < 30 && rng() < 0.6 ? payout : 0;
-          }
-          db.incomes.push(Object.assign({}, INCOME_DEFAULTS, {
-            id: ++db.seq.incomes, trx_date: day, income_type: isService ? "서비스제공" : "상품판매",
-            category: pick(isService ? SERVICES : PRODUCTS), manufacturer: maker, car_model: pick(SEED_CODES.car_model[maker]),
-            product_model: isService && rng() < 0.4 ? pick(UNITS) : "", client,
-            unit_price: amount, amount, vat, net_amount: amount - vat, account: "국민(법인)",
-            payment_type: pay, tax_invoice: tax, memo: "데모 데이터", receivable, payout, payout_due: payoutDue,
-            created_by: "데모", created_at: created,
-          }));
-        }
-        for (let i = 1 + Math.floor(rng() * 2); i > 0; i--) {
-          const [etype, item] = pick(EXP_ITEMS);
-          const amount = (1 + Math.floor(rng() * 29)) * 10000;
-          const payable = etype === "제품원가" && off < 40 && rng() < 0.5 ? amount : 0;
-          db.expenses.push(Object.assign({}, EXPENSE_DEFAULTS, {
-            id: ++db.seq.expenses, trx_date: day, expense_type: etype, item,
-            payment_type: pick(["현금", "카드", "계좌입금"]), client: pick(["해덕", "마트", "식당", "주유소", "기타"]),
-            unit_price: amount, amount, memo: "데모 데이터", payable, created_by: "데모", created_at: created,
-          }));
-        }
-      }
-      if (d.getDate() === 25) {  // 급여·임차료는 매달 한 번
-        for (const [etype, item, amount] of [["인건비", "급여", 3200000], ["비용", "임차료", 1500000]]) {
-          db.expenses.push(Object.assign({}, EXPENSE_DEFAULTS, {
-            id: ++db.seq.expenses, trx_date: day, expense_type: etype, item, payment_type: "계좌입금",
-            unit_price: amount, amount, memo: "데모 데이터", created_by: "데모", created_at: created,
-          }));
-        }
+    const data = window.WellcarDemoSeed.generate(isoOf(new Date()), SEED_CODES.car_model);
+    for (const [table, defaults] of [["incomes", INCOME_DEFAULTS], ["expenses", EXPENSE_DEFAULTS]]) {
+      for (const r of data[table]) {
+        db[table].push(Object.assign({}, defaults, r, { id: ++db.seq[table], created_by: "데모", created_at: r.trx_date + " 18:00:00" }));
       }
     }
-    // 위안화(CNY) 거래 예시
-    const cnyDay = new Date(today); cnyDay.setDate(today.getDate() - 3);
-    db.incomes.push(Object.assign({}, INCOME_DEFAULTS, {
-      id: ++db.seq.incomes, trx_date: isoOf(cnyDay), income_type: "상품판매", category: "앰프",
-      manufacturer: "N/A", client: "해외 거래처", currency: "CNY", exchange_rate: 190.5, quantity: 2,
-      unit_price: 1200, amount: 457200, vat: 0, net_amount: 457200, account: "기업(웰카오디오-개인)",
-      payment_type: "계좌입금", memo: "데모 데이터 · CNY 거래 예시", receivable: 457200,
-      created_by: "데모", created_at: isoOf(cnyDay) + " 18:00:00",
-    }));
-    // 올해 월별 목표: 작년 같은 달 실적 기준 (매출·영업이익 +10%, 지출 예산 +5%, 10만원 단위)
-    const y = today.getFullYear();
-    for (let m = 1; m <= 12; m++) {
-      const month = `${y - 1}-${pad2(m)}`;
-      const sales = db.incomes.filter(r => r.trx_date.startsWith(month)).reduce((a, r) => a + r.amount - r.payout, 0);
-      const spent = db.expenses.filter(r => r.trx_date.startsWith(month)).reduce((a, r) => a + r.amount, 0);
-      const r10 = v => Math.round(v / 100000) * 100000;
-      db.targets[`${y}-${pad2(m)}`] = { sales: r10(sales * 1.1), profit: r10((sales - spent) * 1.1), expense: r10(spent * 1.05) };
-    }
+    Object.assign(db.targets, data.targets);
   }
 
   async function freshDB() {
@@ -383,6 +291,9 @@
     return [data, null];
   }
 
+  /** 요청의 f.<분류>=값 조건 중 그 표의 분류(AGG_DIMS)에 해당하는 것. [[분류, 값]] */
+  const dimFilters = (table, q) => [...q.entries()].filter(([k]) => k.startsWith("f.") && AGG_DIMS[table].includes(k.slice(2)))
+    .map(([k, v]) => [k.slice(2), v]);
   /** app.py _entry_filters와 같은 조건. 행 → true/false */
   function entryFilter(table, q) {
     const tests = [];
@@ -392,6 +303,7 @@
     if (q.get("type")) tests.push(r => r[TYPE_FIELD[table]] === q.get("type"));
     if (q.get("payment")) tests.push(r => r.payment_type === q.get("payment"));
     if (["1", "true"].includes(q.get("outstanding"))) tests.push(r => (r[BALANCE_FIELD[table]] || 0) > 0);
+    for (const [dim, value] of dimFilters(table, q)) tests.push(r => String(r[dim] ?? "") === value);  // 빈 값은 '미지정'
     for (const word of (q.get("q") || "").split(/\s+/).filter(Boolean).slice(0, 5)) {
       const lw = word.toLowerCase();
       const digits = word.replace(/,/g, "");
@@ -454,21 +366,33 @@
     expenses: ["expense_type", "item", "client", "payment_type", "currency"],
   };
   const AGG_TIME = { date: s => s, month: s => s.slice(0, 7), year: s => s.slice(0, 4) };
+  /** 건별 최저·최고 금액과 첫·마지막 거래일 (더할 수 없는 값 — 내역이 없으면 null) */
+  function aggRange(acc, r) {
+    if (acc.amount_min === null || r.amount < acc.amount_min) acc.amount_min = r.amount;
+    if (acc.amount_max === null || r.amount > acc.amount_max) acc.amount_max = r.amount;
+    if (acc.first_date === null || r.trx_date < acc.first_date) acc.first_date = r.trx_date;
+    if (acc.last_date === null || r.trx_date > acc.last_date) acc.last_date = r.trx_date;
+  }
   const AGG_MEASURES = {
     incomes: (acc, r) => {
       acc.cnt++; acc.amount += r.amount; acc.vat += r.vat; acc.payout += r.payout || 0;
       acc.payout_due += r.payout_due || 0; acc.receivable += r.receivable || 0;
       if (r.payment_type === "카드") acc.card += r.amount;
+      acc.qty += Number(r.quantity) || 0;
+      aggRange(acc, r);
     },
     expenses: (acc, r) => {
       acc.cnt++; acc.amount += r.amount; acc.payable += r.payable || 0;
       if (r.expense_type === "제품원가") acc.cost += r.amount;
+      aggRange(acc, r);
     },
   };
+  const AGG_RANGE_ZERO = { amount_min: null, amount_max: null, first_date: null, last_date: null };
   const AGG_ZERO = {
-    incomes: () => ({ cnt: 0, amount: 0, vat: 0, payout: 0, payout_due: 0, receivable: 0, card: 0 }),
-    expenses: () => ({ cnt: 0, amount: 0, payable: 0, cost: 0 }),
+    incomes: () => Object.assign({ cnt: 0, amount: 0, vat: 0, payout: 0, payout_due: 0, receivable: 0, card: 0, qty: 0 }, AGG_RANGE_ZERO),
+    expenses: () => Object.assign({ cnt: 0, amount: 0, payable: 0, cost: 0 }, AGG_RANGE_ZERO),
   };
+  const AGG_MAX_GROUPS = 5;
 
   function aggregate(q) {
     const kind = q.get("kind");
@@ -478,7 +402,8 @@
       return err(400, "from, to는 YYYY-MM-DD 형식이고 from이 to보다 앞서야 합니다.");
     if (dayNum(to) - dayNum(from) > 366 * 30) return err(400, "조회 기간이 너무 깁니다.");
     const groups = (q.get("group") || "").split(",").filter(Boolean);
-    if (groups.length > 3 || new Set(groups).size !== groups.length) return err(400, "group은 서로 다른 항목 3개까지입니다.");
+    if (groups.length > AGG_MAX_GROUPS || new Set(groups).size !== groups.length)
+      return err(400, `group은 서로 다른 항목 ${AGG_MAX_GROUPS}개까지입니다.`);
     for (const g of groups) if (!AGG_TIME[g] && !AGG_DIMS[kind].includes(g)) return err(400, `알 수 없는 group 항목입니다: ${g}`);
     const filters = [];
     for (const [k, v] of q.entries()) {
@@ -640,6 +565,12 @@
     if (q.get("type")) conds.push(`유형 '${q.get("type")}'`);
     if (q.get("payment")) conds.push(`결제유형 '${q.get("payment")}'`);
     if (["1", "true"].includes(q.get("outstanding"))) conds.push("미수·미지급 남은 건만");
+    for (const table of (incOn ? ["incomes"] : []).concat(expOn ? ["expenses"] : [])) {
+      for (const [dim, value] of dimFilters(table, q)) {
+        const text = `${FIELD_LABELS[dim] || dim} '${value || "미지정"}'`;
+        if (!conds.includes(text)) conds.push(text);
+      }
+    }
     const title = { all: "매출/지출", incomes: "매출", expenses: "지출" }[kind];
     const label = { all: "매출지출", incomes: "매출", expenses: "지출" }[kind];
 
